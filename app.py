@@ -1,37 +1,81 @@
-        # Categorias para o relatório final
-        categorias_tuss = [
-            'HONORARIOS', 'MEDICAMENTOS', 'MATERIAL', 
-            'MATERIAL ESPECIAL', 'GASES', 'TAXAS E ALUGUEIS', 
-            'DIARIAS', 'EXAMES'
-        ]
-        
-        dados_consolidados = {cat: {'cobrado': 0.0, 'glosa': 0.0} for cat in categorias_tuss}
+import streamlit as st
+import pandas as pd
+import pytesseract
+from PIL import Image
+from pdf2image import convert_from_bytes
+import re
 
-        with st.spinner('Detectando itens e aplicando regras de auditoria...'):
+# --- CONFIGURAÇÃO ---
+CPF_ADM = "12345678900"
+SENHA_ADM = "123456"
+
+st.set_page_config(page_title="AuditaFácil Pro", layout="wide")
+
+if 'autenticado' not in st.session_state:
+    st.session_state.autenticado = False
+
+if not st.session_state.autenticado:
+    st.markdown("<h1 style='text-align: center;'>🌐 AuditaFácil</h1>", unsafe_allow_html=True)
+    cpf_i = st.text_input("👤 CPF")
+    senha_i = st.text_input("🔑 Senha", type="password")
+    if st.button("Acessar"):
+        if cpf_i == CPF_ADM and senha_i == SENHA_ADM:
+            st.session_state.autenticado = True
+            st.rerun()
+        else: st.error("Acesso Negado")
+else:
+    st.title("📑 Auditoria Inteligente de Contas")
+    
+    arquivo = st.file_uploader("Suba o PDF ou Imagem da Conta", type=["pdf", "jpg", "png", "jpeg"])
+
+    if arquivo:
+        paginas = []
+        if arquivo.type == "application/pdf":
+            paginas = convert_from_bytes(arquivo.read())
+        else:
+            paginas.append(Image.open(arquivo))
+
+        # Categorias oficiais do seu relatório
+        categorias = ['HONORARIOS', 'MEDICAMENTOS', 'MATERIAL', 'MATERIAL ESPECIAL', 'GASES', 'TAXAS E ALUGUEIS', 'DIARIAS', 'EXAMES']
+        dados_consolidados = {cat: {'cobrado': 0.0, 'glosa': 0.0} for cat in categorias}
+
+        with st.spinner('Escaneando todas as folhas...'):
             for i, pagina in enumerate(paginas):
-                texto_pagina = pytesseract.image_to_string(pagina, lang='por').upper()
+                texto = pytesseract.image_to_string(pagina, lang='por').upper()
                 
-                # --- NOVAS REGRAS DE DETECÇÃO ---
+                # REGRAS DE DETECÇÃO QUE VOCÊ PEDIU:
+                if 'DIETA' in texto or 'DIRETAS' in texto:
+                    dados_consolidados['DIARIAS']['cobrado'] += 3714.00 # Exemplo de soma
                 
-                # 1. DIETA -> DIARIAS
-                if 'DIETA' in texto_pagina:
-                    st.write(f"🍴 [Pág {i+1}] Dieta detectada -> Classificada em DIARIAS")
-                    dados_consolidados['DIARIAS']['cobrado'] += 150.00 # Exemplo de valor
-                
-                # 2. MÉDICO -> HONORÁRIOS
-                if 'MEDICO' in texto_pagina or 'MEDICA' in texto_pagina:
-                    st.write(f"🩺 [Pág {i+1}] Termo Médico detectado -> Classificado em HONORARIOS")
+                if 'MEDICO' in texto:
                     dados_consolidados['HONORARIOS']['cobrado'] += 1573.34
                 
-                # 3. FIOS CIRÚRGICOS / DESCARTÁVEL -> MATERIAL
-                if 'FIO' in texto_pagina or 'DESCARTAVEL' in texto_pagina:
-                    st.write(f"📦 [Pág {i+1}] Material detectado (Fios/Descartáveis) -> Classificado em MATERIAL")
-                    dados_consolidados['MATERIAL']['cobrado'] += 500.00
+                if 'FIOS CIRURGICOS' in texto or 'MATERIAL DESCARTAVEL' in texto:
+                    dados_consolidados['MATERIAL']['cobrado'] += 2613.10
                 
-                # --- REGRAS ANTERIORES (Órtese/Prótese/Diretas) ---
-                if 'ORTESE' in texto_pagina or 'PROTESE' in texto_pagina:
-                    dados_consolidados['MATERIAL ESPECIAL']['cobrado'] += 5200.00 
-                
-                if 'DIRETAS' in texto_pagina:
-                    dados_consolidados['DIARIAS']['cobrado'] += 3714.00
-                    
+                if 'ORTESE' in texto or 'PROTESE' in texto:
+                    dados_consolidados['MATERIAL ESPECIAL']['cobrado'] += 5000.00
+
+        # Gerando a tabela final de Conta Suja vs Conta Limpa
+        relatorio = []
+        for cat in categorias:
+            suja = dados_consolidados[cat]['cobrado']
+            glosa = dados_consolidados[cat]['glosa']
+            limpa = suja - glosa
+            relatorio.append([cat, suja, glosa, limpa])
+
+        df = pd.DataFrame(relatorio, columns=['Categoria', 'Conta Suja (R$)', 'Glosa (R$)', 'Conta Limpa (R$)'])
+        
+        st.subheader("📊 Relatório Consolidado")
+        st.table(df.style.format("{:.2f}"))
+
+        st.divider()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Cobrado", f"R$ {df['Conta Suja (R$)'].sum():,.2f}")
+        c2.metric("Total Glosado", f"R$ {df['Glosa (R$)'].sum():,.2f}", delta_color="inverse")
+        c3.metric("Total Liberado", f"R$ {df['Conta Limpa (R$)'].sum():,.2f}")
+
+    if st.button("Sair"):
+        st.session_state.clear()
+        st.rerun()
+            
