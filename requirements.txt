@@ -1,7 +1,6 @@
 streamlit
 pandas
-fpdf
 pytesseract
-opencv-python-headless
-numpy
+pdf2image
 Pillow
+opencv-python-headless
