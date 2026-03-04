@@ -5,51 +5,65 @@ from PIL import Image
 import pdf2image
 import re
 
-st.set_page_config(page_title="AuditaFácil - Precisão Total", layout="wide")
+st.set_page_config(page_title="AuditaFácil Pro", layout="wide")
 
 if 'logado' not in st.session_state: st.session_state.logado = False
 if not st.session_state.logado:
     st.title("🌐 AuditaFácil")
     if st.button("Acessar"): st.session_state.logado = True; st.rerun()
 else:
-    st.title("📄 Auditoria de Alta Precisão (Filtro Anti-Código)")
+    st.title("📄 Auditoria Inteligente por Categorias")
     arquivos = st.file_uploader("Upload das Contas", type=['jpg', 'png', 'jpeg', 'pdf'], accept_multiple_files=True)
 
     if arquivos:
         dados_itens = []
         for arq in arquivos:
             img = Image.open(arq) if arq.type != "application/pdf" else pdf2image.convert_from_bytes(arq.read())[0]
-            texto = pytesseract.image_to_string(img, lang='por')
+            # Aumentamos a precisão do OCR para tabelas
+            texto = pytesseract.image_to_string(img, lang='por', config='--psm 6')
             
             for linha in texto.split('\n'):
-                tuss_match = re.search(r'\b(\d{7,10})\b', linha)
-                # Busca valores apenas com vírgula ou ponto decimal explícito no fim da linha
+                # Busca valores (ex: 1.234,56 ou 45,90)
                 valores = re.findall(r'(\d{1,3}(?:\.\d{3})*,\d{2})', linha)
-
-                if tuss_match and valores:
-                    codigo = tuss_match.group()
-                    # Pegamos sempre o último valor da linha (onde fica o preço total do item)
+                
+                if valores:
                     v_str = valores[-1]
                     v = float(v_str.replace('.', '').replace(',', '.'))
                     
-                    # TRAVA DE SEGURANÇA: Se o valor for > 80% igual ao código, ignore (é erro de leitura)
-                    if v > 1000 and codigo[:5] in str(int(v)): continue
-                    if v == float(codigo): continue
-
+                    # Filtro para ignorar datas ou números muito pequenos que não são itens da conta
+                    if v < 1.0: continue
+                    
                     l_up = linha.upper()
-                    if codigo.startswith(('1', '2', '3')): cat = "HONORÁRIOS"
-                    elif any(x in l_up for x in ["PROTESE", "ORTESE", "OPME", "STENT", "PARAFUSO", "PLACA"]): cat = "MAT. ESPECIAL (OPME)"
-                    elif any(x in l_up for x in ["DIETA", "NUTRI", "ENTERAL", "MEDIC", "SORO"]): cat = "MEDICAMENTOS / DIETAS"
-                    elif any(x in l_up for x in ["DIARIA", "TAXA", "GAS", "SALA"]): cat = "DIÁRIAS E TAXAS"
-                    else: cat = "MATERIAIS / DESCARTÁVEIS"
+                    # --- GAVETAS DE CATEGORIAS REFINADAS ---
+                    if any(x in l_up for x in ["CIRURG", "ANEST", "VISITA", "HM", "HONOR", "MEDICO", "PROCED"]):
+                        cat = "HONORÁRIOS"
+                    elif any(x in l_up for x in ["DIARIA", "TAXA", "GAS", "SALA", "PERNOITE", "ALUGUEL"]):
+                        cat = "DIÁRIAS E TAXAS"
+                    elif any(x in l_up for x in ["PROTESE", "ORTESE", "OPME", "STENT", "PARAFUSO", "PLACA", "ESPECIAL"]):
+                        cat = "MAT. ESPECIAL (OPME)"
+                    elif any(x in l_up for x in ["MEDIC", "FARM", "DIETA", "NUTRI", "ENTERAL", "SORO", "AMPOLA"]):
+                        cat = "MEDICAMENTOS / DIETAS"
+                    else:
+                        cat = "MATERIAIS DESCARTÁVEIS"
 
-                    dados_itens.append({"TUSS": codigo, "Categoria": cat, "Valor": v})
+                    # Pegamos o código TUSS se existir, senão marcamos como 'S/C'
+                    tuss_match = re.search(r'\b(\d{7,10})\b', linha)
+                    codigo = tuss_match.group() if tuss_match else "S/ Código"
+                    
+                    # Evita somar o código como valor
+                    if v == float(codigo.replace('S/ Código', '0')): continue
+
+                    dados_itens.append({"Código/TUSS": codigo, "Categoria": cat, "Valor": v})
 
         if dados_itens:
             df = pd.DataFrame(dados_itens).drop_duplicates()
-            st.write("### 📊 Resumo Consolidado")
-            st.dataframe(df.groupby('Categoria')['Valor'].sum().reset_index().style.format({"Valor": "R$ {:.2f}"}))
-            st.write("### 🔍 Itens Auditados")
+            st.write("### 📊 Resumo por Categoria")
+            resumo = df.groupby('Categoria')['Valor'].sum().reset_index()
+            st.dataframe(resumo.style.format({"Valor": "R$ {:.2f}"}))
+            
+            st.write("### 🔍 Detalhamento dos Itens")
             st.table(df.style.format({"Valor": "{:.2f}"}))
-            st.success(f"## Total Real Identificado: R$ {df['Valor'].sum():,.2f}")
+            
+            total_geral = df['Valor'].sum()
+            st.success(f"## Total Auditado: R$ {total_geral:,.2f}")
             
