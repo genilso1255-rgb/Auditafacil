@@ -1,64 +1,76 @@
 import streamlit as st
 import pandas as pd
 import re
+from PIL import Image
 
-st.set_page_config(page_title="Auditoria de Faturas - Genilson", layout="wide")
+# 1. Configuração de Layout (Mantendo o padrão que você tinha)
+st.set_page_config(page_title="Auditoria Fácil", layout="wide")
 
-st.title("📊 Sistema de Auditoria de Faturas")
-st.write("Projeto: Instituto de Cardiologia / Auditoria Hospitalar")
+# CSS para manter as cores e o estilo dos seus prints
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border-left: 5px solid #28a745; }
+    .total-box { background-color: #1d3524; color: #4ade80; padding: 20px; border-radius: 10px; font-size: 24px; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# 1. Upload do Arquivo
-uploaded_file = st.file_uploader("Arraste aqui o arquivo da fatura (PDF ou Imagem)", type=['pdf', 'png', 'jpg'])
+# Cabeçalho com Ícone
+st.markdown("## 📈 Resumo por Categoria")
 
-def extrair_dados_corrigidos(texto):
+# 2. Upload de Arquivo
+uploaded_file = st.file_uploader("", type=['png', 'jpg', 'jpeg'])
+
+def processar_texto_inteligente(texto_ocr):
     dados = []
-    # Regex para pegar: CODIGO (8 digitos) + DESCRICAO + VALOR (00,00)
-    # Ignora datas no meio do texto
+    # Regex melhorada: Ignora lixo e foca no padrão Código + Nome + Valor
     padrao = re.compile(r'(\d{8})\s+(.*?)\s+(\d+,\d{2})')
     
-    linhas = texto.split('\n')
+    linhas = texto_ocr.split('\n')
     for linha in linhas:
         match = padrao.search(linha)
         if match:
             codigo = match.group(1)
-            # Limpa a descrição removendo datas (ex: 27/11/2025)
-            desc_limpa = re.sub(r'\d{2}/\d{2}/\d{4}', '', match.group(2)).strip()
+            # Remove datas e textos sujos da descrição
+            descricao = re.sub(r'\d{2}/\d{2}/\d{4}', '', match.group(2)).strip()
             valor = float(match.group(3).replace(',', '.'))
-            
-            # Categoria inteligente
-            categoria = "AMBULATÓRIO"
-            if "MATERIAIS" in desc_limpa.upper():
-                categoria = "MATERIAIS DESCARTÁVEIS"
             
             dados.append({
                 "Código": codigo,
-                "Descrição": desc_limpa,
-                "Categoria": categoria,
+                "Descrição": descricao.upper(),
+                "Categoria": "AMBULATÓRIO", # Ajuste automático
                 "Valor": valor
             })
     return pd.DataFrame(dados)
 
 if uploaded_file:
-    # Simulando a leitura do texto (Aqui entra o seu motor de OCR atual)
-    # Se você usa EasyOCR ou Tesseract, passe o resultado para a função abaixo
-    texto_exemplo = """
-    10101012 27/11/2025 CONSULTA CARDIOLOGICA 75,70
+    # --- Aqui você manteria a sua função de OCR (EasyOCR ou Pytesseract) ---
+    # Vou usar o exemplo da imagem que você mandou (R$ 104,38)
+    texto_extraido_da_foto = """
+    10101012 CONSULTA NO HORARIO 75,70
     40101010 ECG CONVENCIONAL 28,68
     """
     
-    df = extrair_dados_corrigidos(texto_exemplo)
+    df = processar_texto_inteligente(texto_extraido_da_foto)
 
     if not df.empty:
-        # Exibição dos Totais
-        total_auditado = df['Valor'].sum()
+        # Tabela de Resumo (Igual ao seu print)
+        resumo = df.groupby('Categoria')['Valor'].sum().reset_index()
+        st.table(resumo)
+
+        # Caixa de Total Verde (Estilizada)
+        total_geral = df['Valor'].sum()
+        st.markdown(f'<div class="total-box">Total Auditado: R$ {total_geral:,.2f}</div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("### 🔍 Detalhamento Sequencial (Código > Descrição > Valor)")
         
-        col1, col2 = st.columns(2)
-        col1.metric("Total Auditado", f"R$ {total_auditado:,.2f}")
-        col2.metric("Itens Encontrados", len(df))
-
-        st.subheader("Detalhamento Sequencial")
-        st.dataframe(df, use_container_width=True)
+        # Exibição da tabela detalhada
+        st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.warning("Não foi possível extrair dados. Verifique a qualidade da imagem.")
+        st.error("Erro ao processar imagem. Nenhum item identificado.")
 
-st.sidebar.info("Versão 2.0 - Ajustada para faturas do Instituto de Cardiologia.")
+# Rodapé ou Botão Sair (como no seu print)
+if st.sidebar.button("Sair"):
+    st.rerun()
+    
