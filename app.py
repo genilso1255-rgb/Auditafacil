@@ -1,90 +1,98 @@
+import streamlit as st
 import cv2
 import pytesseract
-import re
 import numpy as np
+import re
+import pandas as pd
+from PIL import Image
 
-class ProcessadorHospitalar:
-    def __init__(self):
-        # Configurações de login e ADM (Simulado para a estrutura do site)
-        self.admin_config = {"login_tipo": "CPF", "senha_len": 6}
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="AuditaFacil - ADM", layout="centered")
 
-    def alinhar_e_limpar(self, imagem_path):
-        """Corrige inclinação e remove ruídos (carimbos/canetas leves)"""
-        img = cv2.imread(imagem_path)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Threshold adaptativo para separar o texto de manchas/carimbos
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                      cv2.THRESH_BINARY, 11, 2)
-        
-        # Rotação automática (Alinhamento)
-        coords = np.column_stack(np.where(thresh > 0))
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45: angle = -(90 + angle)
-        else: angle = -angle
-        
-        (h, w) = img.shape[:2]
-        center = (w // 2, h // 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        img_rotacionada = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-        
-        return img_rotacionada
+# --- LÓGICA DE LOGIN ---
+if 'logado' not in st.session_state:
+    st.session_state.logado = False
 
-    def extrair_dados(self, texto_ocr):
-        """Busca TUSS -> Nome -> Valor com Regex avançado"""
-        itens_processados = []
-        
-        # Regex para capturar: [Código] [Descrição] [Valor]
-        # Captura valores como 1.000,00 ou 10,50
-        padrao_linha = re.compile(r'(\d{8,10})?.*?\s+([A-Za-z\s]+)\s+R?\$?\s*([\d\.,]+)')
-        
-        lines = texto_ocr.split('\n')
-        for line in lines:
-            match = padrao_linha.search(line)
-            if match:
-                codigo, nome, valor_str = match.groups()
+def tela_login():
+    st.title("🏥 AuditaFacil - Acesso Restrito")
+    cpf = st.text_input("CPF (Login)")
+    senha = st.text_input("Senha (6 dígitos)", type="password")
+    
+    if st.button("Entrar"):
+        if len(senha) == 6: # Aqui você pode colocar seu CPF e senha reais
+            st.session_state.logado = True
+            st.rerun()
+        else:
+            st.error("Senha deve ter 6 dígitos.")
+
+def processar_imagem(img_pil):
+    # Converter PIL para OpenCV
+    img = np.array(img_pil)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    
+    # 1. Alinhamento e Limpeza
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    
+    # 2. OCR (Leitura)
+    texto = pytesseract.image_to_string(thresh, lang='por')
+    
+    # 3. Extração de Dados e Regras de Soma
+    dados = []
+    resumo = {"MEDICAMENTO": 0.0, "MATERIAL DESCARTAVEL": 0.0, "MATERIAL ESPECIAL": 0.0}
+    
+    # Regex para capturar Nome e Valor (Ex: R$ 1.250,50 ou 10,00)
+    padrao = re.compile(r'([A-Za-z\s]{3,})\s+.*?([\d\.,]+)')
+    
+    for linha in texto.split('\n'):
+        match = padrao.search(linha)
+        if match:
+            nome, valor_str = match.groups()
+            nome = nome.strip().upper()
+            try:
+                # Limpa o valor para float
+                val = float(valor_str.replace('.', '').replace(',', '.'))
                 
-                # Tratamento de valor financeiro
-                valor_limpo = valor_str.replace('.', '').replace(',', '.')
-                valor = float(valor_limpo)
+                # Categorização solicitada
+                cat = "OUTROS"
+                if "DIETA" in nome: cat = "MEDICAMENTO"
+                elif "FIO" in nome: cat = "MATERIAL DESCARTAVEL"
+                elif any(x in nome for x in ["ORTESE", "PROTESE", "ESPECIAL", "OPME"]): cat = "MATERIAL ESPECIAL"
                 
-                categoria = self.categorizar_item(nome.upper(), codigo)
-                itens_processados.append({
-                    "item": nome.strip(),
-                    "valor": valor,
-                    "categoria": categoria
-                })
-        return itens_processados
+                if cat in resumo:
+                    resumo[cat] += val
+                dados.append({"Item": nome, "Valor": val, "Categoria": cat})
+            except:
+                continue
+                
+    return resumo, dados
 
-    def categorizar_item(self, nome, codigo):
-        """Regras específicas de agrupamento que você definiu"""
-        if "DIETA" in nome:
-            return "MEDICAMENTO"
-        if "FIO CIRURGICO" in nome or "FIO" in nome:
-            return "MATERIAL DESCARTAVEL"
-        if any(x in nome for x in ["ORTESE", "PROTESE", "ESPECIAL", "OPME"]):
-            return "MATERIAL ESPECIAL"
-        return "OUTROS"
+# --- INTERFACE PRINCIPAL ---
+if not st.session_state.logado:
+    tela_login()
+else:
+    st.sidebar.write(f"Bem-vindo, Administrador")
+    if st.sidebar.button("Sair"):
+        st.session_state.logado = False
+        st.rerun()
 
-    def gerar_tabela_final(self, lista_itens):
-        """Soma os valores conforme sua regra de negócio"""
-        resumo = {
-            "MEDICAMENTO": 0.0,
-            "MATERIAL DESCARTAVEL": 0.0,
-            "MATERIAL ESPECIAL": 0.0
-        }
+    st.header("📸 Nova Auditoria")
+    arquivo = st.file_uploader("Tire a foto da conta ou envie o arquivo", type=['jpg', 'png', 'jpeg'])
+
+    if arquivo is not None:
+        img_exibir = Image.open(arquivo)
+        st.image(img_exibir, caption="Imagem Carregada", use_column_width=True)
         
-        for item in lista_itens:
-            cat = item['categoria']
-            if cat in resumo:
-                resumo[cat] += item['valor']
-        
-        return resumo
+        if st.button("Processar e Calcular"):
+            with st.spinner('Limpando imagem e somando valores...'):
+                resumo, detalhes = processar_imagem(img_exibir)
+                
+                st.subheader("📊 Resultado da Soma")
+                df_resumo = pd.DataFrame([resumo])
+                st.table(df_resumo)
+                
+                with st.expander("Ver itens detalhados"):
+                    st.write(pd.DataFrame(detalhes))
+                    
+                st.success("Cálculo finalizado com sucesso!")
 
-# --- Exemplo de Uso ---
-# proc = ProcessadorHospitalar()
-# img_limpa = proc.alinhar_e_limpar('conta_hospitalar.jpg')
-# texto = pytesseract.image_to_string(img_limpa)
-# resultado = proc.extrair_dados(texto)
-# tabela = proc.gerar_tabela_final(resultado)
-# print(tabela)
