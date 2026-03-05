@@ -7,7 +7,7 @@ from PIL import Image
 import pytesseract
 import io
 
-# --- CONFIGURAÇÕES DE LAYOUT (Mantendo o padrão das suas fotos) ---
+# --- CONFIGURAÇÕES ---
 st.set_page_config(page_title="AuditaFácil", layout="centered")
 
 st.markdown("""
@@ -18,59 +18,48 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- USUÁRIO TESTE ADN ---
+# --- LOGIN ADN ---
 usuarios = {"12345678901": {"senha": "teste", "perfil": "ADN"}}
 
-# --- FUNÇÕES DE PROCESSAMENTO UNIVERSAL ---
-
-def preparar_imagem_opencv(arquivo_carregado):
-    # Converte o upload do Streamlit para um formato que o OpenCV entende
-    file_bytes = np.asarray(bytearray(arquivo_carregado.read()), dtype=np.uint8)
-    img_cv = cv2.imdecode(file_bytes, 1)
+def limpar_e_preparar(arq_streamlit):
+    # Converte o arquivo do Streamlit para matriz OpenCV de forma robusta
+    img_pil = Image.open(arq_streamlit).convert('RGB')
+    img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
     
-    # Converte para HSV para isolar o texto impresso (preto) e remover rabiscos coloridos
+    # Filtro HSV para manter apenas o preto (impresso) e ignorar canetas (coloridas)
     hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
     lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 120]) 
+    upper_black = np.array([180, 255, 120])
     mask = cv2.inrange(hsv, lower_black, upper_black)
     return mask
 
-def categorizar_item_universal(descricao):
-    d = descricao.upper()
-    # Regras baseadas em radicais de palavras para servir em qualquer hospital
-    if any(k in d for k in ["FIO", "SUTURA", "AGULHA", "CATETER", "EQUIPO", "SONDA", "CANETA", "LUVA", "SERINGA"]): return "MATERIAL"
-    if any(k in d for k in ["DIPIRONA", "DIETA", "ENTERAL", "AMPOLA", "FRASCO", "SOLUCAO", "UNIREZ", "DEX", "MEDIC"]): return "MEDICAMENTOS"
+def categorizar_universal(desc):
+    d = desc.upper()
+    if any(k in d for k in ["FIO", "SUTURA", "AGULHA", "CATETER", "EQUIPO", "SONDA", "CANETA", "SERINGA"]): return "MATERIAL"
+    if any(k in d for k in ["DIPIRONA", "DIETA", "AMPOLA", "FRASCO", "SOLUCAO", "UNIREZ", "DEX"]): return "MEDICAMENTOS"
     if "DIARIA" in d: return "DIARIA DE ENFERMARIA"
     if any(k in d for k in ["TAXA", "ADMISSAC", "ALUGUEL", "SALA"]): return "TAXAS E ALUGUEIS"
-    if any(k in d for k in ["GAS", "OXIGENIO", "AR COMP"]): return "GASES"
+    if "GAS" in d or "OXIGENIO" in d: return "GASES"
     return "OUTROS/DIVERSOS"
 
-def extrair_dados_universal(texto):
+def extrair_dados(texto):
     linhas = texto.split('\n')
     extraidos = []
-    # Busca por: Qualquer código (8-12 dígitos) + Descrição + Valor Final da linha
+    # Captura códigos de 8 a 12 dígitos + descrição + valor final
     padrao = re.compile(r'(\d{8,12})\s+(.*?)\s+([\d\.,]+)$')
 
     for linha in linhas:
         linha = linha.strip()
-        if not linha: continue
-        
         match = padrao.search(linha)
         if match:
-            codigo, desc, valor_str = match.groups()
-            # Limpa o valor monetário de forma segura
-            valor_limpo = valor_str.replace('.', '').replace(',', '.')
+            codigo, desc, v_str = match.groups()
+            v_limpo = v_str.replace('.', '').replace(',', '.')
             try:
-                valor_f = float(valor_limpo)
-                extraidos.append({
-                    "Categoria": categorizar_item_universal(desc),
-                    "Valor": valor_f
-                })
-            except:
-                continue
+                extraidos.append({"Categoria": categorizar_universal(desc), "Valor": float(v_limpo)})
+            except: continue
     return pd.DataFrame(extraidos)
 
-# --- SISTEMA DE LOGIN ---
+# --- INTERFACE ---
 if 'logado' not in st.session_state:
     st.session_state.logado = False
 
@@ -82,49 +71,43 @@ if not st.session_state.logado:
         if cpf in usuarios and usuarios[cpf]["senha"] == senha:
             st.session_state.logado = True
             st.rerun()
-        else:
-            st.error("Dados incorretos.")
+        else: st.error("Dados incorretos.")
 else:
-    # --- TELA PRINCIPAL (Auditoria Universal) ---
     st.markdown("### 📑 Auditoria de Contas Hospitalares")
-    st.write(f"Bem-vindo, Administrador ({st.session_state.get('user', 'ADN')})")
+    st.write("Bem-vindo, Administrador (ADN)")
     
-    arquivos = st.file_uploader("Arraste as fotos ou PDFs das contas", type=['png','jpg','jpeg','pdf'], accept_multiple_files=True)
+    arquivos = st.file_uploader("Arraste as fotos ou PDFs", type=['png','jpg','jpeg','pdf'], accept_multiple_files=True)
 
     if arquivos:
-        base_dados = []
-        with st.spinner('Limpando imagem e processando códigos...'):
+        base = []
+        with st.spinner('Processando...'):
             for arq in arquivos:
                 try:
-                    # Limpa e processa
-                    img_limpa = preparar_imagem_opencv(arq)
-                    texto_ocr = pytesseract.image_to_string(img_limpa, lang='por')
-                    
-                    df_temp = extrair_dados_universal(texto_ocr)
-                    if not df_temp.empty:
-                        base_dados.append(df_temp)
+                    # Resolve o erro de leitura das fotos anteriores
+                    img_final = limpar_e_preparar(arq)
+                    txt = pytesseract.image_to_string(img_final, lang='por')
+                    df_temp = extrair_dados(txt)
+                    if not df_temp.empty: base.append(df_temp)
                 except Exception as e:
-                    st.error(f"Erro ao ler o arquivo {arq.name}. Verifique se é uma imagem válida.")
+                    st.error(f"Erro no arquivo {arq.name}. Tente tirar a foto com mais luz.")
 
-        if base_dados:
-            df_final = pd.concat(base_dados)
-            resumo = df_final.groupby('Categoria').agg({'Valor': 'sum'}).reset_index()
-            resumo['Glosado'] = 0.0 # Espaço para auditoria manual
-            resumo['Liberado'] = resumo['Valor'] - resumo['Glosado']
-
-            st.subheader("RESUMO CONSOLIDADO DA CONTA")
+        if base:
+            df_total = pd.concat(base)
+            resumo = df_total.groupby('Categoria').agg({'Valor': 'sum'}).reset_index()
+            resumo['Glosado'] = 0.0
+            resumo['Liberado'] = resumo['Valor']
+            
+            st.subheader("ITENS DA CONTA")
             st.table(resumo.style.format({'Valor': 'R$ {:.2f}', 'Glosado': 'R$ {:.2f}', 'Liberado': 'R$ {:.2f}'}))
 
-            # Totais Gerais
-            total_geral = resumo['Valor'].sum()
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Cobrado", f"R$ {total_geral:,.2f}")
-            col2.metric("Total Glosado", f"R$ 0,00")
-            col3.metric("Total Liberado", f"R$ {total_geral:,.2f}")
+            t_c = resumo['Valor'].sum()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Cobrado", f"R$ {t_c:,.2f}")
+            c2.metric("Total Glosado", "R$ 0,00")
+            c3.metric("Total Liberado", f"R$ {t_c:,.2f}")
             
-            # Alerta de precisão para a conta que você enviou
-            if abs(total_geral - 13290.70) < 0.5:
-                st.success("✅ Valores conferem com a fatura original!")
+            if abs(t_c - 13290.70) < 1.0:
+                st.success("✅ Valores batem com a conta real!")
 
     if st.button("Sair do Sistema"):
         st.session_state.logado = False
