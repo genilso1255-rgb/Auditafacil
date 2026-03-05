@@ -8,51 +8,99 @@ from pillow_heif import register_heif_opener
 
 register_heif_opener()
 
-def processar_hospital(arquivos):
-    resumo = {"HONORARIOS": 0.0, "MEDICAMENTOS": 0.0, "MATERIAL": 0.0, "GASES": 0.0, 
-              "TAXAS E ALUGUEIS": 0.0, "DIARIA DE ENFERMARIA": 0.0, "EXAMES": 0.0, "OPME": 0.0}
+def extrair_valor(linha):
+    """Extrai o último valor monetário de uma linha (Conta Suja)."""
+    matches = re.findall(r'(\d+[\.,]\d{2})', linha)
+    if matches:
+        try:
+            return float(matches[-1].replace('.', '').replace(',', '.'))
+        except:
+            return 0.0
+    return 0.0
+
+def processar_auditar_facil(arquivos):
+    # Dicionário de soma acumulada (As gavetas que combinamos)
+    resumo_sujo = {
+        "MATERIAL DESCARTÁVEL": 0.0,
+        "MATERIAL ESPECIAL (OPME)": 0.0,
+        "MEDICAMENTOS E DIETAS": 0.0,
+        "DIÁRIAS": 0.0,
+        "TAXAS E GASES": 0.0,
+        "EXAMES": 0.0,
+        "PACOTES ESPECIAIS": 0.0,
+        "OUTROS": 0.0
+    }
     
     for arq in arquivos:
         img_pil = Image.open(arq).convert('RGB')
         img_np = np.array(img_pil)
         
-        # ESTRATÉGIA NOVA: Isolar apenas o canal preto para ignorar canetas coloridas
-        # Transformamos a imagem para que o que é colorido (caneta) fique cinza claro e suma
-        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        # LIMPEZA: Ignorar canetas coloridas e focar no texto impresso
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        _, img_bin = cv2.threshold(gray, 125, 255, cv2.THRESH_BINARY)
         
-        # Aumentamos o contraste bruscamente para forçar o texto impresso a aparecer
-        _, img_bin = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
-        
-        # Lemos a página toda focando na estrutura de tabela (psm 6)
         texto = pytesseract.image_to_string(img_bin, lang='por', config='--psm 6')
 
         for linha in texto.split('\n'):
-            linha = linha.upper().strip()
-            # Pega valores que terminam com centavos (ex: 336,33 ou 1.009,02)
-            matches = re.findall(r'(\d+[\.,]\d{2})', linha)
+            linha_upper = linha.upper().strip()
+            valor = extrair_valor(linha_upper)
             
-            if matches:
-                try:
-                    # Nas suas fotos, o valor cobrado é SEMPRE o último da direita
-                    valor_str = matches[-1]
-                    val = float(valor_str.replace('.', '').replace(',', '.'))
-                    
-                    # Se o valor for um código TUSS (sem vírgula lida), o float falha e pula
-                    if val > 15000.0 or val < 0.01: continue 
+            if valor <= 0: continue
+            
+            # REGRAS DE CATEGORIZAÇÃO (As gavetas do Auditar Fácil)
+            if any(x in linha_upper for x in ["FIOS", "FIO CIR", "MATER", "DESC", "AGUL", "LUV", "SERIN"]):
+                resumo_sujo["MATERIAL DESCARTÁVEL"] += valor
+                
+            elif any(x in linha_upper for x in ["OPME", "ORTE", "PROT", "ESPEC", "SINTESE"]):
+                resumo_sujo["MATERIAL ESPECIAL (OPME)"] += valor
+                
+            elif any(x in linha_upper for x in ["DIETA", "MEDIC", "SOLU", "AMP", "SORO", "FARMA"]):
+                resumo_sujo["MEDICAMENTOS E DIETAS"] += valor
+                
+            elif any(x in linha_upper for x in ["DIARIA", "APART", "ENFERM", "UTI", "PERNOITE"]):
+                resumo_sujo["DIÁRIAS"] += valor
+                
+            elif any(x in linha_upper for x in ["TAXA", "SALA", "ALUG", "GAS", "OXIG", "AR COMP"]):
+                resumo_sujo["TAXAS E GASES"] += valor
+                
+            elif any(x in linha_upper for x in ["IMAGEM", "LABOR", "DIAGNOSTICO", "RAIO", "TOMO", "EXAME"]):
+                resumo_sujo["EXAMES"] += valor
+                
+            elif "PACOTE" in linha_upper:
+                resumo_sujo["PACOTES ESPECIAIS"] += valor
+            else:
+                resumo_sujo["OUTROS"] += valor
+                
+    return resumo_sujo
 
-                    # Classificação robusta baseada nas suas categorias reais
-                    cat = "OUTROS"
-                    if any(x in linha for x in ["SALA", "TAXA", "ALUG", "REGISTRO", "PORT"]): cat = "TAXAS E ALUGUEIS"
-                    elif any(x in linha for x in ["GAS", "OXIG", "AR COMP"]): cat = "GASES"
-                    elif any(x in linha for x in ["MEDIC", "DIETA", "SOLU", "AMP", "SORO"]): cat = "MEDICAMENTOS"
-                    elif any(x in linha for x in ["MATER", "FIO", "DESC", "AGUL", "LUV", "SERIN"]): cat = "MATERIAL"
-                    elif any(x in linha for x in ["DIARIA", "APART", "ENFERM"]): cat = "DIARIA DE ENFERMARIA"
-                    elif any(x in linha for x in ["OPME", "ORTE", "PROT", "ESPEC"]): cat = "OPME"
-                    elif "HONOR" in linha: cat = "HONORARIOS"
-                    
-                    if cat in resumo: resumo[cat] += val
-                except: continue
-    return resumo
+# --- INTERFACE STREAMLIT ---
+st.set_page_config(page_title="Auditar Fácil", layout="wide")
+st.title("🛡️ Auditar Fácil - 2026")
+st.write("Processamento inteligente de contas hospitalares e RAH.")
 
-# ... (restante do código de login e interface igual ao anterior)
+uploads = st.file_uploader("Arraste as fotos da conta ou RAH aqui", accept_multiple_files=True)
+
+if uploads:
+    with st.spinner('Limpando imagem e somando categorias...'):
+        dados = processar_auditar_facil(uploads)
+        
+    st.divider()
+    
+    # Exibição do Resumo
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("📊 Resumo da Conta Suja (Por Categoria)")
+        # Remove categorias zeradas para não poluir
+        dados_filtrados = {k: v for k, v in dados.items() if v > 0}
+        st.table([{"Categoria": k, "Total Acumulado": f"R$ {v:,.2f}"} for k, v in dados_filtrados.items()])
+        
+    with col2:
+        total_geral = sum(dados.values())
+        st.metric("Total Bruto Identificado", f"R$ {total_geral:,.2f}")
+        st.info("O sistema somou itens repetidos automaticamente com base na descrição.")
+
+    # Simulação da Conta Limpa (A ser integrada com a leitura do RAH)
+    st.subheader("📝 Próximo passo: Conciliação com RAH")
+    st.write("O sistema detectou os grupos acima. Deseja comparar com as glosas do relatório de auditoria?")
+    
