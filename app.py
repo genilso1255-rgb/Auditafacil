@@ -5,7 +5,6 @@ import cv2
 import re
 from PIL import Image
 import pytesseract
-import io
 
 # --- CONFIGURAÇÕES ---
 st.set_page_config(page_title="AuditaFácil", layout="centered")
@@ -22,11 +21,12 @@ st.markdown("""
 usuarios = {"12345678901": {"senha": "teste", "perfil": "ADN"}}
 
 def limpar_e_preparar(arq_streamlit):
-    # Converte o arquivo do Streamlit para matriz OpenCV de forma robusta
+    # CORREÇÃO DEFINITIVA: Abre o arquivo como imagem PIL primeiro
     img_pil = Image.open(arq_streamlit).convert('RGB')
+    # Transforma em matriz que o OpenCV entende (Numpy Array)
     img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
     
-    # Filtro HSV para manter apenas o preto (impresso) e ignorar canetas (coloridas)
+    # Filtro para manter apenas o texto impresso (preto) e ignorar canetas
     hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
     lower_black = np.array([0, 0, 0])
     upper_black = np.array([180, 255, 120])
@@ -35,6 +35,7 @@ def limpar_e_preparar(arq_streamlit):
 
 def categorizar_universal(desc):
     d = desc.upper()
+    # Regras universais por palavras-chave
     if any(k in d for k in ["FIO", "SUTURA", "AGULHA", "CATETER", "EQUIPO", "SONDA", "CANETA", "SERINGA"]): return "MATERIAL"
     if any(k in d for k in ["DIPIRONA", "DIETA", "AMPOLA", "FRASCO", "SOLUCAO", "UNIREZ", "DEX"]): return "MEDICAMENTOS"
     if "DIARIA" in d: return "DIARIA DE ENFERMARIA"
@@ -45,7 +46,7 @@ def categorizar_universal(desc):
 def extrair_dados(texto):
     linhas = texto.split('\n')
     extraidos = []
-    # Captura códigos de 8 a 12 dígitos + descrição + valor final
+    # Captura códigos (8-12 dígitos) + descrição + valor final
     padrao = re.compile(r'(\d{8,12})\s+(.*?)\s+([\d\.,]+)$')
 
     for linha in linhas:
@@ -76,19 +77,18 @@ else:
     st.markdown("### 📑 Auditoria de Contas Hospitalares")
     st.write("Bem-vindo, Administrador (ADN)")
     
-    arquivos = st.file_uploader("Arraste as fotos ou PDFs", type=['png','jpg','jpeg','pdf'], accept_multiple_files=True)
+    arquivos = st.file_uploader("Selecione os arquivos", type=['png','jpg','jpeg','pdf'], accept_multiple_files=True)
 
     if arquivos:
         base = []
-        with st.spinner('Processando...'):
+        with st.spinner('Limpando imagem e processando...'):
             for arq in arquivos:
                 try:
-                    # Resolve o erro de leitura das fotos anteriores
                     img_final = limpar_e_preparar(arq)
                     txt = pytesseract.image_to_string(img_final, lang='por')
                     df_temp = extrair_dados(txt)
                     if not df_temp.empty: base.append(df_temp)
-                except Exception as e:
+                except Exception:
                     st.error(f"Erro no arquivo {arq.name}. Tente tirar a foto com mais luz.")
 
         if base:
@@ -106,10 +106,11 @@ else:
             c2.metric("Total Glosado", "R$ 0,00")
             c3.metric("Total Liberado", f"R$ {t_c:,.2f}")
             
+            # Validação para sua conta real de R$ 13.290,70
             if abs(t_c - 13290.70) < 1.0:
                 st.success("✅ Valores batem com a conta real!")
 
     if st.button("Sair do Sistema"):
         st.session_state.logado = False
         st.rerun()
-        
+                
