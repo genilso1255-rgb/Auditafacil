@@ -8,87 +8,76 @@ from pillow_heif import register_heif_opener
 
 register_heif_opener()
 
-# Função Universal para capturar valores em qualquer lugar da linha
-def capturar_valor_financeiro(texto):
-    # Regex que ignora códigos de procedimento e foca no valor final (moeda)
-    padrao = r'(\d{1,3}(?:\.\d{3})*,\d{2})'
-    matches = re.findall(padrao, texto)
-    if matches:
-        # No 99% das contas, o valor total do item é o último da direita
-        valor_limpo = matches[-1].replace('.', '').replace(',', '.')
-        try: return float(valor_limpo)
+def extrair_valor_final(linha_texto):
+    # Procura todos os padrões de valores financeiros na linha (ex: 1.234,56 ou 123,45)
+    valores = re.findall(r'(\d[\d\.]*,\d{2})', linha_texto)
+    if valores:
+        # A regra de ouro da auditoria: o valor total/liberado é SEMPRE o último da direita
+        v_str = valores[-1].replace('.', '').replace(',', '.')
+        try: return float(v_str)
         except: return 0.0
     return 0.0
 
-def classificar_categoria_universal(linha):
+def identificar_categoria_universal(linha):
     ln = linha.upper()
-    # Mapeamento por radicais (funciona para qualquer hospital/operadora)
-    if any(x in ln for x in ["HONOR", "CIRURG", "MEDIC", "ASSIST", "SISTEMA", "PROCED"]): return "HONORÁRIOS"
-    if any(x in ln for x in ["MATERIA", "DESCART", "FIOS", "AGULHA", "SERINGA", "LUVAS"]): return "MATERIAIS"
+    # Categorização por radicais de palavras (mais abrangente que nomes fixos)
+    if any(x in ln for x in ["MATERIA", "FIOS", "DESCART", "AGULHA", "LUVAS", "SERINGA"]): return "MATERIAIS"
     if any(x in ln for x in ["MEDICAM", "SORO", "SOLUCAO", "DIETA", "AMPO"]): return "MEDICAMENTOS"
-    if any(x in ln for x in ["DIARIA", "PERNOITE", "ESTADIA", "APART", "ENFERM"]): return "DIÁRIAS"
-    if any(x in ln for x in ["TAXA", "SALA", "EQUIP", "ALUGU", "USO"]): return "TAXAS"
-    if any(x in ln for x in ["EXAME", "LABOR", "IMAGEM", "RAIO", "TOMO", "RESON"]): return "EXAMES"
-    if any(x in ln for x in ["OPME", "ORTESE", "PROTESE", "ESPECIAL"]): return "OPME/MAT. ESPECIAL"
-    if any(x in ln for x in ["GAS", "OXIG", "NITRO"]): return "GASES MEDICINAIS"
+    if any(x in ln for x in ["HONOR", "PROCED", "SISTEMA", "CIRURG", "ASSIST"]): return "HONORÁRIOS"
+    if any(x in ln for x in ["TAXA", "ALUGUEL", "SALA", "USO", "ADMIN"]): return "TAXAS"
+    if any(x in ln for x in ["DIARIA", "PERNOITE", "ESTADIA", "APART"]): return "DIÁRIAS"
+    if any(x in ln for x in ["ORTESE", "PROTESE", "SINTESE", "OPME", "ESPECIAL"]): return "OPME/ESPECIAL"
     if "PACOTE" in ln: return "PACOTES"
-    return "OUTROS/DIVERSOS"
+    return "OUTROS"
 
-def processar_qualquer_conta(arquivo):
+def processar_motor_universal(arquivo):
     resumo = {}
     img = np.array(Image.open(arquivo).convert('RGB'))
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     
-    # Pré-processamento adaptativo para qualquer qualidade de foto
-    img_final = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    
-    texto = pytesseract.image_to_string(img_final, lang='por', config='--psm 6')
+    # Binarização adaptativa para ler documentos com carimbos ou sombras
+    img_proc = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    texto = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
 
     for linha in texto.split('\n'):
         ln = linha.strip()
-        if not ln or len(ln) < 5: continue # ignora ruídos pequenos
+        if not ln or any(s in ln.upper() for s in ["TOTAL DA CONTA", "TOTAL GERAL", "DESCONTO"]): continue
         
-        valor = capturar_valor_financeiro(ln)
+        valor = extrair_valor_final(ln)
         if valor <= 0: continue
         
-        categoria = classificar_categoria_universal(ln)
-        resumo[categoria] = resumo.get(categoria, 0.0) + valor
-            
+        cat = identificar_categoria_universal(ln)
+        resumo[cat] = resumo.get(cat, 0.0) + valor
     return resumo
 
-# --- INTERFACE UNIVERSAL ---
-st.set_page_config(page_title="Auditar Fácil - Sistema Aberto", layout="wide")
-st.title("🛡️ Auditar Fácil - Motor de Auditoria Universal")
-st.info("Suba qualquer conta hospitalar (Suja) e qualquer relatório (Limpo). O sistema identificará os padrões automaticamente.")
+# --- INTERFACE ---
+st.set_page_config(page_title="Auditar Fácil Universal", layout="wide")
+st.title("🛡️ Auditar Fácil - Sistema de Auditoria Aberto")
 
-c1, c2 = st.columns(2)
-with c1: f_suja = st.file_uploader("📂 Conta de Origem (SUJA)", key="u_suja")
-with c2: f_limpa = st.file_uploader("📂 Resultado Auditoria (LIMPA)", key="u_limpa")
+col1, col2 = st.columns(2)
+with col1: f_suja = st.file_uploader("📂 Subir Conta Original (SUJA)", key="s")
+with col2: f_limpa = st.file_uploader("📂 Subir Relatório (LIMPA/RAH)", key="l")
 
 if f_suja and f_limpa:
-    with st.spinner('Processando dados...'):
-        suja = processar_qualquer_conta(f_suja)
-        limpa = processar_qualquer_conta(f_limpa)
+    suja = processar_motor_universal(f_suja)
+    limpa = processar_motor_universal(f_limpa)
     
-    # Criar lista única de todas as categorias encontradas nos dois documentos
-    todas_categorias = sorted(list(set(list(suja.keys()) + list(limpa.keys()))))
+    # Consolidação de categorias para a tabela
+    todas_categorias = sorted(list(set(suja.keys()) | set(limpa.keys())))
     
-    st.subheader("📊 Confronto de Valores")
-    comparativo = []
-    for cat in todas_categorias:
-        v_s = suja.get(cat, 0.0)
-        v_l = limpa.get(cat, 0.0)
-        glosa = v_s - v_l
-        if v_s > 0 or v_l > 0:
-            comparativo.append({
-                "Categoria": cat,
-                "Cobrado (R$)": f"{v_s:,.2f}",
-                "Liberado (R$)": f"{v_l:,.2f}",
-                "Glosa (R$)": f"{max(0, glosa):,.2f}"
-            })
+    st.subheader("📊 Batimento de Glosas")
+    dados_tabela = []
+    for c in todas_categorias:
+        v_s, v_l = suja.get(c, 0.0), limpa.get(c, 0.0)
+        dados_tabela.append({
+            "Categoria": c,
+            "Cobrado (R$)": f"{v_s:,.2f}",
+            "Liberado (R$)": f"{v_l:,.2f}",
+            "Glosa (R$)": f"{max(0, v_s - v_l):,.2f}"
+        })
     
-    st.table(comparativo)
+    st.table(dados_tabela)
     
-    total_suja, total_limpa = sum(suja.values()), sum(limpa.values())
-    st.metric("GLOSA TOTAL", f"R$ {total_suja - total_limpa:,.2f}", delta=f"{total_suja - total_limpa:,.2f}", delta_color="inverse")
+    total_s, total_l = sum(suja.values()), sum(limpa.values())
+    st.metric("TOTAL GLOSADO", f"R$ {total_s - total_l:,.2f}", delta=f"R$ {total_s - total_l:,.2f}", delta_color="inverse")
     
