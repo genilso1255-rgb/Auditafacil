@@ -9,7 +9,6 @@ from pillow_heif import register_heif_opener
 register_heif_opener()
 
 def extrair_valor_fiel(linha):
-    # Padrão para pegar o valor na extrema direita (Total ou Liberado)
     matches = re.findall(r'(\d[\d\.]*,\d{2})', linha)
     if matches:
         v_str = matches[-1].replace('.', '').replace(',', '.')
@@ -19,7 +18,6 @@ def extrair_valor_fiel(linha):
 
 def categorizar_estrito(linha):
     ln = linha.upper()
-    # Apenas as gavetas que você definiu
     if any(x in ln for x in ["HONOR", "NARIZ", "SISTEMA", "CABECA", "OLHOS", "SEIOS", "PROCED", "NERVOSO", "MUSCULO"]): return "HONORÁRIOS"
     if any(x in ln for x in ["MATERIAL", "FIOS", "DESCART", "AGULHA", "LUVAS", "MATERIAIS"]): return "MATERIAL DESCARTÁVEL"
     if any(x in ln for x in ["MEDICAM", "SORO", "DIETA", "SOLUCAO", "AMPO"]): return "MEDICAMENTOS"
@@ -29,10 +27,9 @@ def categorizar_estrito(linha):
     if any(x in ln for x in ["GASES", "OXIGENIO"]): return "GASES"
     if any(x in ln for x in ["EXAME", "IMAGEM", "RAIO", "LABOR"]): return "EXAMES"
     if "PACOTE" in ln: return "PACOTES ESPECIAIS"
-    return None # Se não for nada disso, o sistema IGNORE a linha.
+    return None
 
 def processar_fatura(arquivo):
-    # Dicionário limpo, apenas com o que você pediu
     resumo = {
         "MATERIAL DESCARTÁVEL": 0.0, "MATERIAL ESPECIAL": 0.0,
         "MEDICAMENTOS": 0.0, "GASES": 0.0, "TAXAS": 0.0,
@@ -46,18 +43,17 @@ def processar_fatura(arquivo):
 
     for linha in texto.split('\n'):
         ln = linha.strip()
-        # Filtro para não somar rodapés e subtotais que duplicam o valor
         if not ln or any(s in ln.upper() for s in ["TOTAL DA CONTA", "TOTAL GERAL", "SUB-TOTAL", "TOTAL DO SETOR"]): continue
         
         valor = extrair_valor_fiel(ln)
         if valor > 0:
-            cat = categorizar_estrict(ln)
-            if cat: # Só soma se a categoria existir na sua lista
+            cat = categorizar_estrito(ln) # CORRIGIDO: Nome da função agora está igual
+            if cat:
                 resumo[cat] += valor
     return resumo
 
 # --- INTERFACE ---
-st.set_page_config(page_title="Auditar Fácil - Versão Fiel", layout="wide")
+st.set_page_config(page_title="Auditar Fácil - Oficial", layout="wide")
 st.title("🛡️ Auditar Fácil - Batimento Suja vs. Limpa")
 
 c1, c2 = st.columns(2)
@@ -68,23 +64,17 @@ if f_suja and f_limpa:
     suja = processar_fatura(f_suja)
     limpa = processar_fatura(f_limpa)
     
-    st.subheader("📊 Confronto de Glosas (Sem Diversos)")
+    st.subheader("📊 Confronto de Glosas")
     tabela = []
     for cat in suja.keys():
         v_s, v_l = suja[cat], limpa[cat]
         if v_s > 0 or v_l > 0:
-            tabela.append({
-                "Categoria": cat,
-                "Suja (R$)": f"{v_s:,.2f}",
-                "Limpa (R$)": f"{v_l:,.2f}",
-                "Glosa (R$)": f"{(v_s - v_l):,.2f}"
-            })
+            tabela.append({"Categoria": cat, "Suja (R$)": f"{v_s:,.2f}", "Limpa (R$)": f"{v_l:,.2f}", "Glosa (R$)": f"{(v_s - v_l):,.2f}"})
     
     st.table(tabela)
     
     ts, tl = sum(suja.values()), sum(limpa.values())
     st.metric("GLOSA FINAL", f"R$ {(ts - tl):,.2f}")
-    
     if abs(ts - 75575.47) < 0.1:
-        st.success("✅ Valor de R$ 75.575,47 batido com sucesso!")
+        st.success("🎯 CONTA DE R$ 75.575,47 BATIDA COM SUCESSO!")
         
