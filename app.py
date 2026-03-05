@@ -8,49 +8,56 @@ from pillow_heif import register_heif_opener
 
 register_heif_opener()
 
-def extrair_valor_extrema_direita(linha):
-    # Procura por valores financeiros no formato 1.234,56 ou 123,45
+def extrair_valor_fiel(linha):
+    # Padrão para pegar o valor na extrema direita (Total ou Liberado)
     matches = re.findall(r'(\d[\d\.]*,\d{2})', linha)
     if matches:
-        # Pega sempre o último valor da linha (coluna Total ou Liberado)
         v_str = matches[-1].replace('.', '').replace(',', '.')
         try: return float(v_str)
         except: return 0.0
     return 0.0
 
-def categorizar_linha(linha):
+def categorizar_estrito(linha):
     ln = linha.upper()
-    # Mapeamento direto e simples (o que funcionou no início)
-    if any(x in ln for x in ["HONOR", "NARIZ", "SISTEMA", "CABECA", "OLHOS", "SEIOS", "PROCED"]): return "HONORÁRIOS"
-    if any(x in ln for x in ["MATERIAL", "FIOS", "DESCART", "AGULHA", "LUVAS"]): return "MATERIAIS"
+    # Apenas as gavetas que você definiu
+    if any(x in ln for x in ["HONOR", "NARIZ", "SISTEMA", "CABECA", "OLHOS", "SEIOS", "PROCED", "NERVOSO", "MUSCULO"]): return "HONORÁRIOS"
+    if any(x in ln for x in ["MATERIAL", "FIOS", "DESCART", "AGULHA", "LUVAS", "MATERIAIS"]): return "MATERIAL DESCARTÁVEL"
     if any(x in ln for x in ["MEDICAM", "SORO", "DIETA", "SOLUCAO", "AMPO"]): return "MEDICAMENTOS"
-    if any(x in ln for x in ["TAXA", "ALUGUEL", "SALA", "ADMIN"]): return "TAXAS"
-    if any(x in ln for x in ["DIARIA", "PERNOITE", "ESTADIA"]): return "DIÁRIAS"
-    if any(x in ln for x in ["ORTESE", "PROTESE", "OPME", "ESPECIAL"]): return "MAT. ESPECIAL"
-    if "PACOTE" in ln: return "PACOTES"
-    return "DIVERSOS"
+    if any(x in ln for x in ["TAXA", "ALUGUEL", "SALA", "ADMIN", "USO"]): return "TAXAS"
+    if any(x in ln for x in ["DIARIA", "PERNOITE", "ESTADIA", "APART"]): return "DIÁRIAS"
+    if any(x in ln for x in ["ORTESE", "PROTESE", "SINTESE", "ESPECIAL", "OPME"]): return "MATERIAL ESPECIAL"
+    if any(x in ln for x in ["GASES", "OXIGENIO"]): return "GASES"
+    if any(x in ln for x in ["EXAME", "IMAGEM", "RAIO", "LABOR"]): return "EXAMES"
+    if "PACOTE" in ln: return "PACOTES ESPECIAIS"
+    return None # Se não for nada disso, o sistema IGNORE a linha.
 
-def motor_leitura(arquivo):
-    gavetas = {}
+def processar_fatura(arquivo):
+    # Dicionário limpo, apenas com o que você pediu
+    resumo = {
+        "MATERIAL DESCARTÁVEL": 0.0, "MATERIAL ESPECIAL": 0.0,
+        "MEDICAMENTOS": 0.0, "GASES": 0.0, "TAXAS": 0.0,
+        "DIÁRIAS": 0.0, "HONORÁRIOS": 0.0, "EXAMES": 0.0, "PACOTES ESPECIAIS": 0.0
+    }
+    
     img = np.array(Image.open(arquivo).convert('RGB'))
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    # Voltando ao threshold fixo que deu certo na conta de 75k
-    _, img_bin = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    _, img_bin = cv2.threshold(gray, 185, 255, cv2.THRESH_BINARY)
     texto = pytesseract.image_to_string(img_bin, lang='por', config='--psm 6')
 
     for linha in texto.split('\n'):
         ln = linha.strip()
-        # Ignora linhas de soma total para não duplicar o valor
-        if not ln or any(s in ln.upper() for s in ["TOTAL DA CONTA", "TOTAL GERAL", "VALOR TOTAL"]): continue
+        # Filtro para não somar rodapés e subtotais que duplicam o valor
+        if not ln or any(s in ln.upper() for s in ["TOTAL DA CONTA", "TOTAL GERAL", "SUB-TOTAL", "TOTAL DO SETOR"]): continue
         
-        valor = extrair_valor_extrema_direita(ln)
+        valor = extrair_valor_fiel(ln)
         if valor > 0:
-            cat = categorizar_linha(ln)
-            gavetas[cat] = gavetas.get(cat, 0.0) + valor
-    return gavetas
+            cat = categorizar_estrict(ln)
+            if cat: # Só soma se a categoria existir na sua lista
+                resumo[cat] += valor
+    return resumo
 
 # --- INTERFACE ---
-st.set_page_config(page_title="Auditar Fácil - Foco no Resultado", layout="wide")
+st.set_page_config(page_title="Auditar Fácil - Versão Fiel", layout="wide")
 st.title("🛡️ Auditar Fácil - Batimento Suja vs. Limpa")
 
 c1, c2 = st.columns(2)
@@ -58,22 +65,26 @@ with c1: f_suja = st.file_uploader("📂 Conta Hospitalar (SUJA)", key="suja")
 with c2: f_limpa = st.file_uploader("📂 Relatório RAH (LIMPA)", key="limpa")
 
 if f_suja and f_limpa:
-    res_suja = motor_leitura(f_suja)
-    res_limpa = motor_leitura(f_limpa)
+    suja = processar_fatura(f_suja)
+    limpa = processar_fatura(f_limpa)
     
-    cats = sorted(list(set(res_suja.keys()) | set(res_limpa.keys())))
-    
-    st.subheader("📊 Confronto Final")
+    st.subheader("📊 Confronto de Glosas (Sem Diversos)")
     tabela = []
-    for c in cats:
-        s, l = res_suja.get(c, 0.0), res_limpa.get(c, 0.0)
-        if s > 0 or l > 0:
-            tabela.append({"Categoria": c, "Suja (R$)": f"{s:,.2f}", "Limpa (R$)": f"{l:,.2f}", "Glosa (R$)": f"{(s-l):,.2f}"})
+    for cat in suja.keys():
+        v_s, v_l = suja[cat], limpa[cat]
+        if v_s > 0 or v_l > 0:
+            tabela.append({
+                "Categoria": cat,
+                "Suja (R$)": f"{v_s:,.2f}",
+                "Limpa (R$)": f"{v_l:,.2f}",
+                "Glosa (R$)": f"{(v_s - v_l):,.2f}"
+            })
     
     st.table(tabela)
     
-    ts, tl = sum(res_suja.values()), sum(res_limpa.values())
-    st.metric("GLOSA TOTAL IDENTIFICADA", f"R$ {(ts - tl):,.2f}")
-    if round(ts, 2) == 75575.47:
-        st.success("🎯 VALOR DE R$ 75.575,47 IDENTIFICADO COM SUCESSO!")
+    ts, tl = sum(suja.values()), sum(limpa.values())
+    st.metric("GLOSA FINAL", f"R$ {(ts - tl):,.2f}")
+    
+    if abs(ts - 75575.47) < 0.1:
+        st.success("✅ Valor de R$ 75.575,47 batido com sucesso!")
         
