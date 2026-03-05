@@ -23,37 +23,43 @@ def tela_login():
             st.rerun()
 
 def processar_hospital(arquivos):
+    # Categorias oficiais do seu exemplo
     resumo = {"HONORARIOS": 0.0, "MEDICAMENTOS": 0.0, "MATERIAL": 0.0, "GASES": 0.0, 
               "TAXAS E ALUGUEIS": 0.0, "DIARIA DE ENFERMARIA": 0.0, "EXAMES": 0.0, "OPME": 0.0}
     
     for arq in arquivos:
-        img = Image.open(arq).convert('L')
-        img_np = np.array(img)
-        img_bin = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-        texto = pytesseract.image_to_string(img_bin, lang='por')
+        img_pil = Image.open(arq).convert('RGB')
+        img_np = np.array(img_pil)
+        
+        # TRANSFORMAÇÃO PARA CONTA SUJA: Aumenta o contraste e remove sombras
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        img_bin = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 15)
+        
+        # Configuração do Tesseract para focar em tabelas (psm 6)
+        texto = pytesseract.image_to_string(img_bin, lang='por', config='--psm 6')
 
         for linha in texto.split('\n'):
-            linha = linha.upper()
-            # REGRA DE OURO: Captura apenas números que tenham vírgula (formato de real)
-            # Isso evita ler o código TUSS como se fosse valor.
-            valores = re.findall(r'\d+,\d{2}', linha)
+            linha = linha.upper().strip()
+            # Pega números que parecem valores (ex: 1.434,79 ou 89,44)
+            nums = re.findall(r'(\d+[\.,]\d{2})', linha)
             
-            if valores:
+            if nums:
                 try:
-                    # Pegamos o último valor da linha (Coluna VI Total)
-                    valor_str = valores[-1]
-                    val = float(valor_str.replace(',', '.'))
+                    # O valor cobrado na sua conta é sempre o último da direita (VI Total)
+                    valor_str = nums[-1]
+                    val = float(valor_str.replace('.', '').replace(',', '.'))
                     
-                    # Filtro de segurança: se o valor for absurdamente alto para um único item, ignoramos
-                    if val > 50000.00: continue 
+                    # Ignora códigos TUSS e erros de milhões
+                    if val > 15000.0 or val < 0.05: continue 
                     
+                    # Classificação por palavras-chave reais das suas fotos
                     cat = "OUTROS"
-                    if any(x in linha for x in ["SALA", "TAXA", "ALUGUE", "REGISTRO"]): cat = "TAXAS E ALUGUEIS"
-                    elif any(x in linha for x in ["GAS", "OXIG", "AR COMP"]): cat = "GASES"
+                    if any(x in linha for x in ["SALA", "TAXA", "ALUG", "REGISTRO", "PORT"]): cat = "TAXAS E ALUGUEIS"
+                    elif any(x in linha for x in ["GAS", "OXIG", "AR COMP", "VUL"]): cat = "GASES"
                     elif any(x in linha for x in ["MEDIC", "DIETA", "SOLU", "AMP", "VUL"]): cat = "MEDICAMENTOS"
-                    elif any(x in linha for x in ["MATER", "FIO", "DESC", "AGUL", "LUV", "SERINGA"]): cat = "MATERIAL"
-                    elif any(x in linha for x in ["DIARIA", "APART", "ENFERM"]): cat = "DIARIA DE ENFERMARIA"
-                    elif any(x in linha for x in ["OPME", "ORTESE", "PROTESE", "ESPEC"]): cat = "OPME"
+                    elif any(x in linha for x in ["MATER", "FIO", "DESC", "AGUL", "LUV", "SERINGA", "CURATIVO"]): cat = "MATERIAL"
+                    elif any(x in linha for x in ["DIARIA", "APART", "ENFERM", "PACOTE"]): cat = "DIARIA DE ENFERMARIA"
+                    elif any(x in linha for x in ["OPME", "ORTESE", "PROTESE", "ESPEC", "SINTESE"]): cat = "OPME"
                     elif "HONOR" in linha: cat = "HONORARIOS"
                     
                     if cat in resumo: resumo[cat] += val
@@ -68,15 +74,22 @@ else:
         st.session_state.logado = False
         st.rerun()
 
-    fotos = st.file_uploader("Enviar Contas", type=['jpg', 'jpeg', 'png', 'heic'], accept_multiple_files=True)
-    if fotos and st.button("Calcular Total"):
-        res = processar_hospital(fotos)
-        st.subheader("Resultado por Categoria")
-        for c, v in res.items():
-            if v > 0:
-                st.write(f"**{c}:** R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
-        
-        total_geral = sum(res.values())
-        st.divider()
-        st.metric("TOTAL GERAL DA CONTA", f"R$ {total_geral:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
-        
+    st.write("---")
+    fotos = st.file_uploader("Selecione as fotos (HEIF/JPG/PNG)", type=['jpg', 'jpeg', 'png', 'heic'], accept_multiple_files=True)
+    
+    if fotos:
+        if st.button("Calcular Total da Conta"):
+            with st.spinner("Limpando imagem e somando categorias..."):
+                res = processar_hospital(fotos)
+                
+                st.subheader("Resumo por Categoria")
+                for c, v in res.items():
+                    if v > 0:
+                        # Formatação de moeda brasileira
+                        valor_fmt = f"R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                        st.write(f"**{c}:** {valor_fmt}")
+                
+                total = sum(res.values())
+                st.divider()
+                st.metric("VALOR TOTAL COBRADO", f"R$ {total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+                
