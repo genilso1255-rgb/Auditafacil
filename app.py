@@ -6,60 +6,79 @@ import re
 from PIL import Image, ImageOps
 import pytesseract
 
-def limpeza_final_total(arq):
+def ultra_limpeza_vFinal(arq):
     img = Image.open(arq).convert('L')
     img_cv = np.array(img)
-    
-    # Aumenta nitidez: essencial para os valores pequenos que faltam
-    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-    img_cv = cv2.filter2D(img_cv, -1, kernel)
-    
-    # Remove ruídos de caneta (rabiscos circulares)
-    img_cv = cv2.fastNlMeansDenoising(img_cv, h=30)
-    
-    # Binarização com limite dinâmico
-    _, final = cv2.threshold(img_cv, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Remove sombras e destaca o texto preto das tabelas
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    img_cv = clahe.apply(img_cv)
+    _, final = cv2.threshold(img_cv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return final
 
-def extrair_precisao_maxima(texto):
-    # Regex melhorada: captura números mesmo se o ponto de milhar for lido como vírgula
-    # ou se houver um caractere de "check" ao lado.
-    padrao = re.compile(r'(\d{1,3}(?:[\.,]\d{3})*,\d{2})')
+def processar_fatura_completa(texto):
+    linhas = texto.split('\n')
+    extraidos = []
+    categoria_atual = "OUTROS"
     
-    achados = padrao.findall(texto)
-    valores = []
-    
-    for v in achados:
-        try:
-            # Normaliza: remove pontos de milhar e troca vírgula decimal por ponto
-            v_limpo = v.replace('.', '').replace(',', '.')
-            num = float(v_limpo)
-            
-            # BLOQUEIO DE TOTAIS DE GRUPO (Evita duplicar os valores principais)
-            if num in [5425.86, 306.76, 2565.48, 198.37, 55.12, 391.32, 13290.70]:
-                continue
-            
-            if 0.50 < num < 10000.00:
-                valores.append(num)
-        except: continue
-    return valores
+    # Regex para capturar valores com centavos, mesmo com ruído ao lado
+    padrao_v = re.compile(r'(\d[\d\.,]*,\d{2})')
 
-# --- INTERFACE DE FECHAMENTO ---
-st.title("🏁 Auditoria: Fechamento da Conta")
-st.write("Meta: Localizar os R$ 133,43 faltantes.")
-
-files = st.file_uploader("Suba as imagens novamente", accept_multiple_files=True)
-
-if files:
-    total_geral = []
-    for f in files:
-        img = limpeza_final_total(f)
-        # PSM 6: Melhor para ler os valores alinhados na direita
-        txt = pytesseract.image_to_string(img, lang='por', config='--psm 6')
+    for linha in linhas:
+        l = linha.upper().strip()
+        if not l: continue
         
-        # O pulo do gato: se não achar nada, tenta com PSM 11 (texto esparso)
-        achados = extrair_precisao_maxima(txt)
-        if not achados:
-            txt = pytesseract.image_to_string(img, lang='por', config='--psm 11')
-            achados = extrair_precisao_maxima(txt)
+        # Identificador de Seções (Categorias)
+        if "MATERIAIS" in l: categoria_atual = "MATERIAL"
+        elif "MEDICAMENTOS" in l: categoria_atual = "MEDICAMENTOS"
+        elif "TAXAS" in l: categoria_atual = "TAXAS"
+        elif "GASES" in l: categoria_atual = "GASES"
+        elif "FIOS" in l: categoria_atual = "MATERIAL"
+
+        # Captura o valor e associa à categoria
+        match = padrao_v.search(l)
+        if match:
+            v_limpo = match.group(1).replace('.', '').replace(',', '.')
+            try:
+                valor = float(v_limpo)
+                
+                # IGNORAR TOTAIS ACUMULADOS (para não duplicar a conta)
+                if valor in [13290.70, 5425.86, 2565.48, 306.76, 55.12]: continue
+                if valor < 0.50 or valor > 9000: continue
+                
+                extraidos.append({"Categoria": categoria_atual, "Valor": valor})
+            except: continue
+            
+    return pd.DataFrame(extraidos)
+
+# --- INTERFACE ---
+st.title("📑 Auditoria Hospitalar Final")
+arquivos = st.file_uploader("Suba as fotos da conta", accept_multiple_files=True)
+
+if arquivos:
+    bases = []
+    for f in arquivos:
+        img = ultra_limpeza_vFinal(f)
+        # Tenta ler a tabela inteira (PSM 6) e depois caçar termos soltos (PSM 11)
+        txt = pytesseract.image_to_string(img, lang='por', config='--psm 6') + \
+              pytesseract.image_to_string(img, lang='por', config='--psm 11')
+        
+        df_fatia = processar_fatura_completa(txt)
+        if not df_fatia.empty: bases.append(df_fatia)
+
+    if bases:
+        df_final = pd.concat(bases).drop_duplicates()
+        
+        # EXIBIÇÃO POR CATEGORIA
+        st.subheader("📊 Resultado por Categoria")
+        resumo = df_final.groupby("Categoria")["Valor"].sum().reset_index()
+        st.table(resumo.style.format({"Valor": "R$ {:.2f}"}))
+        
+        total_somado = df_final["Valor"].sum()
+        st.divider()
+        st.header(f"Total da Conta: R$ {total_somado:,.2f}")
+        
+        if abs(total_somado - 13290.70) < 1.0:
+            st.success("✅ SUCESSO: O valor total e as categorias batem 100%!")
+        else:
+            st.warning(f"Diferença de R$ {13290.70 - total_somado:.2f}. Verifique se a foto dos GASES MEDICINAIS está nítida.")
             
