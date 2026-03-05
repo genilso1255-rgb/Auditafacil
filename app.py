@@ -1,84 +1,90 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
 import cv2
-import re
-from PIL import Image, ImageOps
 import pytesseract
+import re
+import numpy as np
 
-def ultra_limpeza_vFinal(arq):
-    img = Image.open(arq).convert('L')
-    img_cv = np.array(img)
-    # Remove sombras e destaca o texto preto das tabelas
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    img_cv = clahe.apply(img_cv)
-    _, final = cv2.threshold(img_cv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return final
+class ProcessadorHospitalar:
+    def __init__(self):
+        # Configurações de login e ADM (Simulado para a estrutura do site)
+        self.admin_config = {"login_tipo": "CPF", "senha_len": 6}
 
-def processar_fatura_completa(texto):
-    linhas = texto.split('\n')
-    extraidos = []
-    categoria_atual = "OUTROS"
-    
-    # Regex para capturar valores com centavos, mesmo com ruído ao lado
-    padrao_v = re.compile(r'(\d[\d\.,]*,\d{2})')
-
-    for linha in linhas:
-        l = linha.upper().strip()
-        if not l: continue
+    def alinhar_e_limpar(self, imagem_path):
+        """Corrige inclinação e remove ruídos (carimbos/canetas leves)"""
+        img = cv2.imread(imagem_path)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Identificador de Seções (Categorias)
-        if "MATERIAIS" in l: categoria_atual = "MATERIAL"
-        elif "MEDICAMENTOS" in l: categoria_atual = "MEDICAMENTOS"
-        elif "TAXAS" in l: categoria_atual = "TAXAS"
-        elif "GASES" in l: categoria_atual = "GASES"
-        elif "FIOS" in l: categoria_atual = "MATERIAL"
+        # Threshold adaptativo para separar o texto de manchas/carimbos
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                      cv2.THRESH_BINARY, 11, 2)
+        
+        # Rotação automática (Alinhamento)
+        coords = np.column_stack(np.where(thresh > 0))
+        angle = cv2.minAreaRect(coords)[-1]
+        if angle < -45: angle = -(90 + angle)
+        else: angle = -angle
+        
+        (h, w) = img.shape[:2]
+        center = (w // 2, h // 2)
+        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+        img_rotacionada = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        
+        return img_rotacionada
 
-        # Captura o valor e associa à categoria
-        match = padrao_v.search(l)
-        if match:
-            v_limpo = match.group(1).replace('.', '').replace(',', '.')
-            try:
-                valor = float(v_limpo)
+    def extrair_dados(self, texto_ocr):
+        """Busca TUSS -> Nome -> Valor com Regex avançado"""
+        itens_processados = []
+        
+        # Regex para capturar: [Código] [Descrição] [Valor]
+        # Captura valores como 1.000,00 ou 10,50
+        padrao_linha = re.compile(r'(\d{8,10})?.*?\s+([A-Za-z\s]+)\s+R?\$?\s*([\d\.,]+)')
+        
+        lines = texto_ocr.split('\n')
+        for line in lines:
+            match = padrao_linha.search(line)
+            if match:
+                codigo, nome, valor_str = match.groups()
                 
-                # IGNORAR TOTAIS ACUMULADOS (para não duplicar a conta)
-                if valor in [13290.70, 5425.86, 2565.48, 306.76, 55.12]: continue
-                if valor < 0.50 or valor > 9000: continue
+                # Tratamento de valor financeiro
+                valor_limpo = valor_str.replace('.', '').replace(',', '.')
+                valor = float(valor_limpo)
                 
-                extraidos.append({"Categoria": categoria_atual, "Valor": valor})
-            except: continue
-            
-    return pd.DataFrame(extraidos)
+                categoria = self.categorizar_item(nome.upper(), codigo)
+                itens_processados.append({
+                    "item": nome.strip(),
+                    "valor": valor,
+                    "categoria": categoria
+                })
+        return itens_processados
 
-# --- INTERFACE ---
-st.title("📑 Auditoria Hospitalar Final")
-arquivos = st.file_uploader("Suba as fotos da conta", accept_multiple_files=True)
+    def categorizar_item(self, nome, codigo):
+        """Regras específicas de agrupamento que você definiu"""
+        if "DIETA" in nome:
+            return "MEDICAMENTO"
+        if "FIO CIRURGICO" in nome or "FIO" in nome:
+            return "MATERIAL DESCARTAVEL"
+        if any(x in nome for x in ["ORTESE", "PROTESE", "ESPECIAL", "OPME"]):
+            return "MATERIAL ESPECIAL"
+        return "OUTROS"
 
-if arquivos:
-    bases = []
-    for f in arquivos:
-        img = ultra_limpeza_vFinal(f)
-        # Tenta ler a tabela inteira (PSM 6) e depois caçar termos soltos (PSM 11)
-        txt = pytesseract.image_to_string(img, lang='por', config='--psm 6') + \
-              pytesseract.image_to_string(img, lang='por', config='--psm 11')
+    def gerar_tabela_final(self, lista_itens):
+        """Soma os valores conforme sua regra de negócio"""
+        resumo = {
+            "MEDICAMENTO": 0.0,
+            "MATERIAL DESCARTAVEL": 0.0,
+            "MATERIAL ESPECIAL": 0.0
+        }
         
-        df_fatia = processar_fatura_completa(txt)
-        if not df_fatia.empty: bases.append(df_fatia)
+        for item in lista_itens:
+            cat = item['categoria']
+            if cat in resumo:
+                resumo[cat] += item['valor']
+        
+        return resumo
 
-    if bases:
-        df_final = pd.concat(bases).drop_duplicates()
-        
-        # EXIBIÇÃO POR CATEGORIA
-        st.subheader("📊 Resultado por Categoria")
-        resumo = df_final.groupby("Categoria")["Valor"].sum().reset_index()
-        st.table(resumo.style.format({"Valor": "R$ {:.2f}"}))
-        
-        total_somado = df_final["Valor"].sum()
-        st.divider()
-        st.header(f"Total da Conta: R$ {total_somado:,.2f}")
-        
-        if abs(total_somado - 13290.70) < 1.0:
-            st.success("✅ SUCESSO: O valor total e as categorias batem 100%!")
-        else:
-            st.warning(f"Diferença de R$ {13290.70 - total_somado:.2f}. Verifique se a foto dos GASES MEDICINAIS está nítida.")
-            
+# --- Exemplo de Uso ---
+# proc = ProcessadorHospitalar()
+# img_limpa = proc.alinhar_e_limpar('conta_hospitalar.jpg')
+# texto = pytesseract.image_to_string(img_limpa)
+# resultado = proc.extrair_dados(texto)
+# tabela = proc.gerar_tabela_final(resultado)
+# print(tabela)
