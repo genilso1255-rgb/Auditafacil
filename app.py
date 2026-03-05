@@ -3,60 +3,61 @@ import pandas as pd
 import numpy as np
 import cv2
 import re
-from PIL import Image
+from PIL import Image, ImageOps
 import pytesseract
 
 # --- CONFIGURAÇÕES ---
 st.set_page_config(page_title="AuditaFácil", layout="centered")
 
-st.markdown("""
-    <style>
-    .stApp { background-color: #0e1117; color: white; }
-    label { color: white !important; }
-    .stMetric { background-color: #1e2127; padding: 15px; border-radius: 10px; border: 1px solid #333; }
-    </style>
-    """, unsafe_allow_html=True)
-
 # --- LOGIN ADN ---
 usuarios = {"12345678901": {"senha": "teste", "perfil": "ADN"}}
 
-def limpar_e_preparar(arq_streamlit):
-    # CORREÇÃO DEFINITIVA: Abre o arquivo como imagem PIL primeiro
-    img_pil = Image.open(arq_streamlit).convert('RGB')
-    # Transforma em matriz que o OpenCV entende (Numpy Array)
-    img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+def tratar_imagem_v2(arq_streamlit):
+    # Converte para escala de cinza e aumenta o contraste
+    img_pil = Image.open(arq_streamlit).convert('L')
+    img_pil = ImageOps.autocontrast(img_pil)
     
-    # Filtro para manter apenas o texto impresso (preto) e ignorar canetas
-    hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-    lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 120])
-    mask = cv2.inrange(hsv, lower_black, upper_black)
-    return mask
+    # Transforma em matriz para o OpenCV
+    img_cv = np.array(img_pil)
+    
+    # Binarização: Deixa o que é texto bem preto e o fundo bem branco
+    _, img_binaria = cv2.threshold(img_cv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    return img_binaria
 
 def categorizar_universal(desc):
     d = desc.upper()
-    # Regras universais por palavras-chave
-    if any(k in d for k in ["FIO", "SUTURA", "AGULHA", "CATETER", "EQUIPO", "SONDA", "CANETA", "SERINGA"]): return "MATERIAL"
-    if any(k in d for k in ["DIPIRONA", "DIETA", "AMPOLA", "FRASCO", "SOLUCAO", "UNIREZ", "DEX"]): return "MEDICAMENTOS"
+    if any(k in d for k in ["FIO", "SUTURA", "AGULHA", "CATETER", "EQUIPO", "SONDA", "CANETA", "SERINGA", "LIXA", "LUVA"]): return "MATERIAL"
+    if any(k in d for k in ["DIPIRONA", "DIETA", "AMPOLA", "FRASCO", "SOLUCAO", "UNIREZ", "DEX", "TORADOL", "RAPIFEN"]): return "MEDICAMENTOS"
     if "DIARIA" in d: return "DIARIA DE ENFERMARIA"
     if any(k in d for k in ["TAXA", "ADMISSAC", "ALUGUEL", "SALA"]): return "TAXAS E ALUGUEIS"
-    if "GAS" in d or "OXIGENIO" in d: return "GASES"
+    if any(k in d for k in ["GAS", "OXIGENIO", "AR COMP"]): return "GASES"
+    if any(k in d for k in ["HONORARIO", "MEDICO"]): return "HONORARIOS"
     return "OUTROS/DIVERSOS"
 
-def extrair_dados(texto):
+def extrair_dados_v2(texto):
     linhas = texto.split('\n')
     extraidos = []
-    # Captura códigos (8-12 dígitos) + descrição + valor final
-    padrao = re.compile(r'(\d{8,12})\s+(.*?)\s+([\d\.,]+)$')
+    # Regex para pegar o Código (coluna 1) e o Valor Total (última coluna)
+    # Ex: 08016194 ... 398,37
+    padrao = re.compile(r'(\d{7,12}).*?\s([\d\.,]+)$')
 
     for linha in linhas:
         linha = linha.strip()
         match = padrao.search(linha)
         if match:
-            codigo, desc, v_str = match.groups()
+            codigo, v_str = match.groups()
             v_limpo = v_str.replace('.', '').replace(',', '.')
             try:
-                extraidos.append({"Categoria": categorizar_universal(desc), "Valor": float(v_limpo)})
+                # Tentamos pegar a descrição entre o código e o valor
+                desc_idx = linha.find(codigo) + len(codigo)
+                valor_idx = linha.rfind(v_str)
+                desc = linha[desc_idx:valor_idx].strip()
+                
+                extraidos.append({
+                    "Categoria": categorizar_universal(desc),
+                    "Valor": float(v_limpo)
+                })
             except: continue
     return pd.DataFrame(extraidos)
 
@@ -65,31 +66,30 @@ if 'logado' not in st.session_state:
     st.session_state.logado = False
 
 if not st.session_state.logado:
-    st.markdown("<h1 style='text-align: center;'>🌐 AuditaFácil</h1>", unsafe_allow_html=True)
-    cpf = st.text_input("👤 CPF (apenas números)")
+    st.markdown("<h1>🌐 AuditaFácil</h1>", unsafe_allow_html=True)
+    cpf = st.text_input("👤 CPF")
     senha = st.text_input("🔑 Senha", type="password")
     if st.button("Acessar Sistema"):
         if cpf in usuarios and usuarios[cpf]["senha"] == senha:
             st.session_state.logado = True
             st.rerun()
-        else: st.error("Dados incorretos.")
 else:
     st.markdown("### 📑 Auditoria de Contas Hospitalares")
-    st.write("Bem-vindo, Administrador (ADN)")
-    
-    arquivos = st.file_uploader("Selecione os arquivos", type=['png','jpg','jpeg','pdf'], accept_multiple_files=True)
+    arquivos = st.file_uploader("Selecione as fotos", type=['png','jpg','jpeg'], accept_multiple_files=True)
 
     if arquivos:
         base = []
-        with st.spinner('Limpando imagem e processando...'):
+        with st.spinner('Lendo fatura...'):
             for arq in arquivos:
                 try:
-                    img_final = limpar_e_preparar(arq)
-                    txt = pytesseract.image_to_string(img_final, lang='por')
-                    df_temp = extrair_dados(txt)
+                    img_tratada = tratar_imagem_v2(arq)
+                    # Configuração --psm 11 é para texto esparso/tabelas
+                    txt = pytesseract.image_to_string(img_tratada, lang='por', config='--psm 11')
+                    
+                    df_temp = extrair_dados_v2(txt)
                     if not df_temp.empty: base.append(df_temp)
-                except Exception:
-                    st.error(f"Erro no arquivo {arq.name}. Tente tirar a foto com mais luz.")
+                except Exception as e:
+                    st.error(f"Erro no processamento. Verifique se o Tesseract está instalado.")
 
         if base:
             df_total = pd.concat(base)
@@ -97,20 +97,18 @@ else:
             resumo['Glosado'] = 0.0
             resumo['Liberado'] = resumo['Valor']
             
-            st.subheader("ITENS DA CONTA")
+            st.subheader("RESUMO DA AUDITORIA")
             st.table(resumo.style.format({'Valor': 'R$ {:.2f}', 'Glosado': 'R$ {:.2f}', 'Liberado': 'R$ {:.2f}'}))
-
-            t_c = resumo['Valor'].sum()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Cobrado", f"R$ {t_c:,.2f}")
-            c2.metric("Total Glosado", "R$ 0,00")
-            c3.metric("Total Liberado", f"R$ {t_c:,.2f}")
             
-            # Validação para sua conta real de R$ 13.290,70
-            if abs(t_c - 13290.70) < 1.0:
-                st.success("✅ Valores batem com a conta real!")
+            total_c = resumo['Valor'].sum()
+            st.metric("Total da Conta", f"R$ {total_c:,.2f}")
+            
+            if abs(total_c - 13290.70) < 1.0:
+                st.success("✅ Soma bate com o rodapé da fatura!")
+        else:
+            st.warning("Não conseguimos ler os dados. Tente tirar a foto bem de cima e com luz.")
 
-    if st.button("Sair do Sistema"):
+    if st.button("Sair"):
         st.session_state.logado = False
         st.rerun()
-                
+        
