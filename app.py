@@ -8,99 +8,102 @@ from pillow_heif import register_heif_opener
 
 register_heif_opener()
 
-def extrair_valor(linha):
-    """Extrai o último valor monetário de uma linha (Conta Suja)."""
-    matches = re.findall(r'(\d+[\.,]\d{2})', linha)
-    if matches:
-        try:
-            return float(matches[-1].replace('.', '').replace(',', '.'))
-        except:
-            return 0.0
-    return 0.0
+def limpar_imagem(imagem_pil):
+    """Remove ruídos e marcas de caneta para focar no texto impresso."""
+    img_np = np.array(imagem_pil.convert('RGB'))
+    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    # Threshold ajustado para ignorar carimbos e canetas coloridas
+    _, img_bin = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
+    return img_bin
+
+def extrair_dados_rah(texto):
+    """Captura a tabela de glosas do documento RAH."""
+    glosas = {}
+    padrao = r"(MATERIAL|GASES|MEDICAMENTOS|MATERIAL ESPECIAL|TAXAS E ALUGUEIS|DIARIA)\s+1\s+R\$\s+[\d\.,]+\s+R\$\s+([\d\.,]+)"
+    matches = re.findall(padrao, texto.upper())
+    for cat, valor in matches:
+        glosas[cat] = float(valor.replace('.', '').replace(',', '.'))
+    return glosas
 
 def processar_auditar_facil(arquivos):
-    # Dicionário de soma acumulada (As gavetas que combinamos)
-    resumo_sujo = {
+    # Gavetas de agrupamento definidas pelo usuário
+    resumo_categorias = {
         "MATERIAL DESCARTÁVEL": 0.0,
         "MATERIAL ESPECIAL (OPME)": 0.0,
         "MEDICAMENTOS E DIETAS": 0.0,
         "DIÁRIAS": 0.0,
         "TAXAS E GASES": 0.0,
         "EXAMES": 0.0,
-        "PACOTES ESPECIAIS": 0.0,
         "OUTROS": 0.0
     }
     
+    texto_completo = ""
     for arq in arquivos:
-        img_pil = Image.open(arq).convert('RGB')
-        img_np = np.array(img_pil)
-        
-        # LIMPEZA: Ignorar canetas coloridas e focar no texto impresso
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        _, img_bin = cv2.threshold(gray, 125, 255, cv2.THRESH_BINARY)
-        
+        img_bin = limpar_imagem(Image.open(arq))
         texto = pytesseract.image_to_string(img_bin, lang='por', config='--psm 6')
+        texto_completo += texto + "\n"
 
         for linha in texto.split('\n'):
-            linha_upper = linha.upper().strip()
-            valor = extrair_valor(linha_upper)
+            ln = linha.upper().strip()
+            # Pega o último valor da linha (Total do item)
+            valores = re.findall(r'(\d+[\.,]\d{2})', ln)
+            if not valores: continue
             
-            if valor <= 0: continue
+            val = float(valores[-1].replace('.', '').replace(',', '.'))
             
-            # REGRAS DE CATEGORIZAÇÃO (As gavetas do Auditar Fácil)
-            if any(x in linha_upper for x in ["FIOS", "FIO CIR", "MATER", "DESC", "AGUL", "LUV", "SERIN"]):
-                resumo_sujo["MATERIAL DESCARTÁVEL"] += valor
-                
-            elif any(x in linha_upper for x in ["OPME", "ORTE", "PROT", "ESPEC", "SINTESE"]):
-                resumo_sujo["MATERIAL ESPECIAL (OPME)"] += valor
-                
-            elif any(x in linha_upper for x in ["DIETA", "MEDIC", "SOLU", "AMP", "SORO", "FARMA"]):
-                resumo_sujo["MEDICAMENTOS E DIETAS"] += valor
-                
-            elif any(x in linha_upper for x in ["DIARIA", "APART", "ENFERM", "UTI", "PERNOITE"]):
-                resumo_sujo["DIÁRIAS"] += valor
-                
-            elif any(x in linha_upper for x in ["TAXA", "SALA", "ALUG", "GAS", "OXIG", "AR COMP"]):
-                resumo_sujo["TAXAS E GASES"] += valor
-                
-            elif any(x in linha_upper for x in ["IMAGEM", "LABOR", "DIAGNOSTICO", "RAIO", "TOMO", "EXAME"]):
-                resumo_sujo["EXAMES"] += valor
-                
-            elif "PACOTE" in linha_upper:
-                resumo_sujo["PACOTES ESPECIAIS"] += valor
+            # Lógica de agrupamento por nome (ignora códigos TUSS)
+            if any(x in ln for x in ["FIOS", "MATERIAIS HOSPITALARES", "DESC", "AGULHA"]):
+                resumo_categorias["MATERIAL DESCARTÁVEL"] += val
+            elif any(x in ln for x in ["ORTESES", "PROTESES", "SINTESE", "MATERIAL ESPECIAL"]):
+                resumo_categorias["MATERIAL ESPECIAL (OPME)"] += val
+            elif any(x in ln for x in ["MEDICAMENTOS", "DIETA", "SOLUCAO", "SORO"]):
+                resumo_categorias["MEDICAMENTOS E DIETAS"] += val
+            elif any(x in ln for x in ["DIARIA", "APARTAMENTO", "ENFERMARIA"]):
+                resumo_categorias["DIÁRIAS"] += val
+            elif any(x in ln for x in ["TAXA", "SALA", "ALUGUEL", "GASES", "OXIGENIO"]):
+                resumo_categorias["TAXAS E GASES"] += val
+            elif any(x in ln for x in ["DIAGNOSTICO", "IMAGEM", "RAIO X", "LABORATORIO"]):
+                resumo_categorias["EXAMES"] += val
             else:
-                resumo_sujo["OUTROS"] += valor
-                
-    return resumo_sujo
+                resumo_categorias["OUTROS"] += val
 
-# --- INTERFACE STREAMLIT ---
+    glosas_rah = extrair_dados_rah(texto_completo)
+    return resumo_categorias, glosas_rah
+
+# --- Interface Auditar Fácil ---
 st.set_page_config(page_title="Auditar Fácil", layout="wide")
 st.title("🛡️ Auditar Fácil - 2026")
-st.write("Processamento inteligente de contas hospitalares e RAH.")
+st.markdown("### Processamento de Conta Suja vs. Conta Limpa")
 
-uploads = st.file_uploader("Arraste as fotos da conta ou RAH aqui", accept_multiple_files=True)
+uploads = st.file_uploader("Upload das fotos da Conta e do RAH", accept_multiple_files=True)
 
 if uploads:
-    with st.spinner('Limpando imagem e somando categorias...'):
-        dados = processar_auditar_facil(uploads)
-        
-    st.divider()
+    dados_sujos, glosas = processar_auditar_facil(uploads)
     
-    # Exibição do Resumo
-    col1, col2 = st.columns([2, 1])
+    # Criando o painel comparativo
+    col1, col2, col3 = st.columns(3)
+    total_sujo = sum(dados_sujos.values())
+    total_glosa = sum(glosas.values())
     
-    with col1:
-        st.subheader("📊 Resumo da Conta Suja (Por Categoria)")
-        # Remove categorias zeradas para não poluir
-        dados_filtrados = {k: v for k, v in dados.items() if v > 0}
-        st.table([{"Categoria": k, "Total Acumulado": f"R$ {v:,.2f}"} for k, v in dados_filtrados.items()])
-        
-    with col2:
-        total_geral = sum(dados.values())
-        st.metric("Total Bruto Identificado", f"R$ {total_geral:,.2f}")
-        st.info("O sistema somou itens repetidos automaticamente com base na descrição.")
+    col1.metric("Conta Suja (Bruto)", f"R$ {total_sujo:,.2f}")
+    col2.metric("Total Glosado", f"R$ {total_glosa:,.2f}", delta_color="inverse")
+    col3.metric("Conta Limpa (Líquido)", f"R$ {total_sujo - total_glosa:,.2f}")
 
-    # Simulação da Conta Limpa (A ser integrada com a leitura do RAH)
-    st.subheader("📝 Próximo passo: Conciliação com RAH")
-    st.write("O sistema detectou os grupos acima. Deseja comparar com as glosas do relatório de auditoria?")
+    st.write("#### Detalhamento por Categoria")
+    tabela_final = []
+    for cat, valor in dados_sujos.items():
+        if valor > 0:
+            # Mapeamento simples para cruzar categorias da conta com categorias do RAH
+            glosa_correspondente = 0.0
+            if "MATERIAL DESCARTÁVEL" in cat: glosa_correspondente = glosas.get("MATERIAL", 0)
+            elif "MEDICAMENTOS" in cat: glosa_correspondente = glosas.get("MEDICAMENTOS", 0)
+            
+            tabela_final.append({
+                "Categoria": cat,
+                "Conta Suja": f"R$ {valor:,.2f}",
+                "Glosa": f"R$ {glosa_correspondente:,.2f}",
+                "Conta Limpa": f"R$ {valor - glosa_correspondente:,.2f}"
+            })
+    
+    st.table(tabela_final)
     
