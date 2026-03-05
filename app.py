@@ -1,80 +1,137 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+import cv2
+import re
+from PIL import Image
+import pytesseract
 
-# --- CONFIGURAÇÃO E LAYOUT ---
+# --- 1. CONFIGURAÇÕES TÉCNICAS E ESTILO ---
 st.set_page_config(page_title="AuditaFácil", layout="centered")
 
-# CSS para manter o padrão escuro das fotos
+# CSS para manter o layout escuro e fiel às suas fotos
 st.markdown("""
     <style>
     .stApp { background-color: #0e1117; color: white; }
-    .stMetric { background-color: #1e2127; padding: 10px; border-radius: 5px; }
+    .stMetric { background-color: #1e2127; padding: 15px; border-radius: 10px; border: 1px solid #333; }
+    label { color: white !important; }
+    .stTable { background-color: #1e2127; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- LOGIN ---
+# --- 2. BANCO DE DATOS DE TESTE (ADN) ---
+usuarios = {
+    "12345678901": {"senha": "teste", "perfil": "ADN"},
+}
+
+# --- 3. FUNÇÕES DE PROCESSAMENTO "GOOGLE LENS" (LÓGICA LIMPA) ---
+
+def limpar_imagem(imagem_pil):
+    """ Remove rabiscos de caneta e mantém apenas o texto impresso (preto) """
+    img = cv2.cvtColor(np.array(imagem_pil), cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    # Filtro para manter apenas tons muito escuros (texto impresso)
+    lower_black = np.array([0, 0, 0])
+    upper_black = np.array([180, 255, 90])
+    mask = cv2.inrange(hsv, lower_black, upper_black)
+    return mask
+
+def categorizar_por_texto(descricao):
+    """ Regras de negócio para separar os itens nas gavetas certas """
+    d = descricao.upper()
+    if any(k in d for k in ["FIO", "SUTURA", "AGULHA", "CATETER", "EQUIPO", "SONDA", "CANETA"]): return "MATERIAL"
+    if any(k in d for k in ["DIPIRONA", "DIETA", "ENTERAL", "AMPOLA", "FRASCO", "UNIREZ", "SOLUCAO"]): return "MEDICAMENTOS"
+    if "DIARIA" in d: return "DIARIA DE ENFERMARIA"
+    if any(k in d for k in ["TAXA", "ADMISSAC", "ALUGUEL"]): return "TAXAS E ALUGUEIS"
+    if "GAS" in d or "OXIGENIO" in d: return "GASES"
+    if "EXAME" in d: return "EXAMES"
+    return "OUTROS/DIVERSOS"
+
+def extrair_dados_fatura(texto):
+    """ Busca códigos de 8 a 12 dígitos e valores no final da linha """
+    linhas = texto.split('\n')
+    extraidos = []
+    # Regex flexível: Código (8-12) + Descrição + Valor (R$ 0.000,00)
+    padrao = re.compile(r'(\d{8,12})\s+(.*?)\s+([\d\.,]+)$')
+
+    for linha in linhas:
+        linha = linha.strip()
+        if not linha: continue
+        
+        match = padrao.search(linha)
+        if match:
+            codigo, desc, valor_str = match.groups()
+            # Converte valor "1.234,56" para float 1234.56
+            valor = float(valor_str.replace('.', '').replace(',', '.'))
+            extraidos.append({
+                "Código": codigo,
+                "Descrição": desc,
+                "Categoria": categorizar_por_texto(desc),
+                "Valor": valor
+            })
+    return pd.DataFrame(extraidos)
+
+# --- 4. CONTROLE DE ACESSO ---
 if 'logado' not in st.session_state:
     st.session_state.logado = False
 
+# --- TELA DE LOGIN ---
 if not st.session_state.logado:
     st.markdown("<h1 style='text-align: center;'>🌐 AuditaFácil</h1>", unsafe_allow_html=True)
-    cpf = st.text_input("👤 CPF (apenas números)")
-    senha = st.text_input("🔑 Senha", type="password")
-    if st.button("Acessar Sistema"):
-        if cpf == "12345678901" and senha == "teste":
-            st.session_state.logado = True
-            st.rerun()
-        else:
-            st.error("Dados de teste: 12345678901 / teste")
+    with st.container():
+        cpf_input = st.text_input("👤 CPF (apenas números)")
+        senha_input = st.text_input("🔑 Senha", type="password")
+        if st.button("Acessar Sistema"):
+            if cpf_input in usuarios and usuarios[cpf_input]["senha"] == senha_input:
+                st.session_state.logado = True
+                st.session_state.perfil = usuarios[cpf_input]["perfil"]
+                st.rerun()
+            else:
+                st.error("CPF ou Senha inválidos.")
+        st.markdown("<p style='text-align: center;'><a href='#'>Esqueceu a senha?</a></p>", unsafe_allow_html=True)
 
-# --- INTERFACE INTERNA ---
+# --- TELA INTERNA (AUDITORIA) ---
 else:
-    st.markdown("# 📑 Auditoria de Contas Hospitalares")
-    
-    st.info("Agora você pode selecionar vários arquivos (PDF ou Imagem) segurando a tecla Ctrl ou pressionando cada um no celular.")
+    st.markdown("### 📑 Auditoria de Contas Hospitalares")
+    st.info("Selecione as fotos ou PDFs. O sistema irá ignorar rabiscos e capturar códigos de 8 a 12 dígitos.")
 
-    arquivos = st.file_uploader("Selecione as fotos ou PDFs das contas", 
-                               type=["pdf", "jpg", "jpeg", "png"], 
-                               accept_multiple_files=True)
+    arquivos = st.file_uploader("Arraste os arquivos aqui", type=['png','jpg','jpeg','pdf'], accept_multiple_files=True)
 
     if arquivos:
-        st.success(f"{len(arquivos)} arquivo(s) carregado(s). Iniciando leitura...")
+        todos_itens = []
+        with st.spinner('Limpando imagem e processando OCR...'):
+            for arq in arquivos:
+                # Processamento de imagem
+                img = Image.open(arq)
+                img_processada = limpar_imagem(img)
+                texto_puro = pytesseract.image_to_string(img_processada, lang='por')
+                
+                df_arq = extrair_dados_fatura(texto_puro)
+                if not df_arq.empty:
+                    todos_itens.append(df_arq)
         
-        # --- TABELA DE ITENS DA CONTA (O que você pediu) ---
-        st.subheader("ITENS DA CONTA")
-        
-        # Simulando os dados extraídos pelo seu OCR/TUSS
-        dados_exemplo = {
-            'Descrição do Item:': ['HONORARIOS', 'MEDICAMENTOS', 'MATERIAL', 'GASES', 'TAXAS E ALUGUEIS', 'DIARIA DE ENFERMARIA', 'EXAMES'],
-            'Quantidade:': [1, 1, 1, 1, 1, 2, 1],
-            'Cobrado:': [1573.34, 419.50, 2613.10, 9.78, 1959.43, 3714.00, 23.30],
-            'Glosado:': [0.00, 17.40, 416.80, 0.00, 425.80, 0.00, 0.00]
-        }
-        
-        df = pd.DataFrame(dados_exemplo)
-        df['Liberado:'] = df['Cobrado:'] - df['Glosado:']
-        
-        # Formatação para moeda R$
-        df_style = df.style.format({
-            'Cobrado:': 'R$ {:.2f}', 
-            'Glosado:': 'R$ {:.2f}', 
-            'Liberado:': 'R$ {:.2f}'
-        })
-        
-        st.table(df_style)
+        if todos_itens:
+            df_final = pd.concat(todos_itens)
+            
+            # --- TABELA POR CATEGORIA (Modelo da sua Empresa) ---
+            st.subheader("ITENS DA CONTA")
+            resumo = df_final.groupby('Categoria').agg({'Valor': 'sum'}).reset_index()
+            resumo['Glosado'] = 0.0  # Campo para o Auditor preencher
+            resumo['Liberado'] = resumo['Valor'] - resumo['Glosado']
+            
+            st.table(resumo.style.format({'Valor': 'R$ {:.2f}', 'Glosado': 'R$ {:.2f}', 'Liberado': 'R$ {:.2f}'}))
 
-        # --- RESUMO TOTAL (Logo em seguida) ---
-        total_cobrado = df['Cobrado:'].sum()
-        total_glosado = df['Glosado:'].sum()
-        total_liberado = df['Liberado:'].sum()
-        perc_glosa = (total_glosado / total_cobrado) * 100
-
-        # Layout de colunas para o rodapé financeiro
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Cobrado", f"R$ {total_cobrado:,.2f}")
-        c2.metric("Total Glosado", f"R$ {total_glosado:,.2f}")
-        c3.metric("% Glosa", f"{perc_glosa:.1f}%")
-        c4.metric("Total Liberado", f"R$ {total_liberado:,.2f}")
+            # --- RODAPÉ FINANCEIRO ---
+            t_cobrado = resumo['Valor'].sum()
+            t_glosado = resumo['Glosado'].sum()
+            
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Cobrado", f"R$ {t_cobrado:,.2f}")
+            c2.metric("Total Glosado", f"R$ {t_glosado:,.2f}")
+            c3.metric("% Glosa", f"{(t_glosado/t_cobrado)*100:.1f}%" if t_cobrado > 0 else "0%")
+            c4.metric("Total Liberado", f"R$ {t_cobrado - t_glosado:,.2f}")
+        else:
+            st.warning("Nenhum código TUSS ou valor foi identificado. Verifique a nitidez da foto.")
 
     if st.button("Sair do Sistema"):
         st.session_state.logado = False
