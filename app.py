@@ -8,16 +8,19 @@ from pillow_heif import register_heif_opener
 
 register_heif_opener()
 
-def extrair_valor_br(texto_linha):
-    # Procura o valor no final da linha, ignorando ruídos entre o texto e o número
-    matches = re.findall(r'(\d[\d\.]*,\d{2})', texto_linha)
-    if matches:
-        valor_str = matches[-1].replace('.', '').replace(',', '.')
-        try: return float(valor_limpo)
-        except: return 0.0
+def extrair_valor_final(texto_linha):
+    # Procura qualquer número que termine com vírgula e dois dígitos (ex: 22.831,31)
+    # Ele pega desde o primeiro dígito até os centavos, ignorando o que tiver no meio
+    match = re.search(r'(\d[\d\.,]*\d,\d{2})|(\d+,\d{2})', texto_linha)
+    if match:
+        valor_str = match.group().replace('.', '').replace(',', '.')
+        try:
+            return float(valor_str)
+        except:
+            return 0.0
     return 0.0
 
-def processar_auditar_facil_final_v6(arquivos):
+def processar_conta_suja(arquivos):
     resumo = {
         "MATERIAL DESCARTÁVEL": 0.0,
         "MATERIAL ESPECIAL": 0.0,
@@ -33,45 +36,59 @@ def processar_auditar_facil_final_v6(arquivos):
     setores_ignorar = ["CENTRO CIRURGICO", "APARTAMENTO", "CTI ADULTO", "TOTAL DO SETOR", "VALOR TOTAL DA GUIA"]
 
     for arq in arquivos:
-        img = np.array(Image.open(arq).convert('RGB'))
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        # Filtro de nitidez para ler através de carimbos
-        img_bin = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-        texto = pytesseract.image_to_string(img_bin, lang='por', config='--psm 6')
+        img_pil = Image.open(arq).convert('RGB')
+        img_np = np.array(img_pil)
+        
+        # Processamento simples e eficaz: Cinza + Nitidez
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        texto = pytesseract.image_to_string(gray, lang='por', config='--psm 6')
 
         for linha in texto.split('\n'):
             ln = linha.upper().strip()
-            if not ln or any(s in ln for s in setores_ignorar): continue
             
-            # Pega o valor da linha
-            valor = extrair_valor_br(ln)
-            if valor <= 0: continue
+            # 1. Filtro de títulos (para não duplicar)
+            if any(s in ln for s in setores_ignorar):
+                continue
+            
+            # 2. Busca o valor (Milhares e Centavos)
+            valor = extrair_valor_final(ln)
+            if valor <= 0:
+                continue
 
-            # --- DISTRIBUIÇÃO NAS GAVETAS ---
-            # HONORÁRIOS (Sistemas e Anatomia)
-            if any(x in ln for x in ["NERVOSO", "SISTEMA", "MUSCULO", "CABECA", "PESCOCO", "NARIZ", "OLHOS", "SEIOS", "HONORARIO"]):
+            # 3. Distribuição nas Gavetas (Ajustada com os itens que faltavam)
+            
+            # HONORÁRIOS (Sistemas, Anatomia e Honorários Médicos)
+            if any(x in ln for x in ["HONORARIO", "CABECA", "PESCOCO", "NARIZ", "OLHOS", "SEIOS", "NERVOSO", "SISTEMA", "MUSCULO"]):
                 resumo["HONORÁRIOS"] += valor
-            # MEDICAMENTOS (Uso comum e restrito)
-            elif any(x in ln for x in ["MEDICAM", "RESTRITO", "DIETA", "SOLUCAO", "SORO"]):
+            
+            # MEDICAMENTOS (Comum e Restrito)
+            elif any(x in ln for x in ["MEDICAM", "DIETA", "SOLUCAO", "NUTRICAO", "SORO"]):
                 resumo["MEDICAMENTOS"] += valor
-            # MATERIAL DESCARTÁVEL
-            elif any(x in ln for x in ["FIOS CIR", "MATERIAIS HOSPITALARES", "DESCARTAVEL", "AGULHA"]):
+                
+            # MATERIAL DESCARTÁVEL (Materiais + Fios)
+            elif any(x in ln for x in ["FIOS CIR", "MATERIAIS HOSPITALARES", "DESCARTAVEL", "AGULHA", "LUVAS"]):
                 resumo["MATERIAL DESCARTÁVEL"] += valor
-            # MATERIAL ESPECIAL
+                
+            # MATERIAL ESPECIAL (OPME)
             elif any(x in ln for x in ["ORTESE", "PROTESE", "SINTESE", "ESPECIAL", "OPME"]):
                 resumo["MATERIAL ESPECIAL"] += valor
+                
             # TAXAS
-            elif any(x in ln for x in ["TAXA", "ALUGUEL", "SALA", "EQUIPAMENTO", "ADMINISTRATIVA"]):
+            elif any(x in ln for x in ["TAXA", "ALUGUEL", "SALA", "EQUIPAMENTO", "ADMINIST"]):
                 resumo["TAXAS"] += valor
+                
             # DIÁRIAS
-            elif any(x in ln for x in ["DIARIA", "PERNOITE", "ESTADIA", "ENFERMARIA"]):
+            elif any(x in ln for x in ["DIARIA", "PERNOITE", "ESTADIA"]):
                 resumo["DIÁRIAS"] += valor
+
             # GASES
-            elif any(x in ln for x in ["GASES", "OXIGENIO", "AR COMPRIMIDO"]):
+            elif any(x in ln for x in ["GASES", "OXIGENIO", "AR COMPR"]):
                 resumo["GASES"] += valor
+                
             # EXAMES
-            elif any(x in ln for x in ["DIAGNOSTICO", "IMAGEM", "RAIO X", "LABORATORIO", "TOMOGRAFIA"]):
+            elif any(x in ln for x in ["DIAGNOSTICO", "IMAGEM", "RAIO X", "LABORAT", "TOMOGRAFIA"]):
                 resumo["EXAMES"] += valor
+
             # PACOTES
             elif "PACOTE" in ln:
                 resumo["PACOTES ESPECIAIS"] += valor
@@ -79,26 +96,26 @@ def processar_auditar_facil_final_v6(arquivos):
     return resumo
 
 # --- INTERFACE ---
-st.set_page_config(page_title="Auditar Fácil Pro", layout="wide")
-st.title("🛡️ Auditar Fácil - Versão Definitiva")
+st.set_page_config(page_title="Auditar Fácil - Final", layout="wide")
+st.title("🛡️ Auditar Fácil - Versão Restaurada")
 
-uploads = st.file_uploader("Suba os documentos aqui", accept_multiple_files=True)
+uploads = st.file_uploader("Suba as imagens", accept_multiple_files=True)
 
 if uploads:
-    with st.spinner('Consolidando conta suja...'):
-        resultado = processar_auditar_facil_final_v6(uploads)
+    with st.spinner('Processando...'):
+        resultado = processar_conta_suja(uploads)
     
-    st.markdown("### 📊 Resumo Consolidado")
+    st.subheader("📋 Resumo da Conta")
+    
     col1, col2 = st.columns(2)
     with col1:
-        for cat, total in resultado.items():
-            # Exibe todas, mesmo que R$ 0,00
-            st.write(f"✅ **{cat}:** R$ {total:,.2f}")
+        for cat in ["MATERIAL DESCARTÁVEL", "MATERIAL ESPECIAL", "MEDICAMENTOS", "GASES", "TAXAS", "DIÁRIAS", "HONORÁRIOS", "EXAMES", "PACOTES ESPECIAIS"]:
+            total = resultado[cat]
+            st.write(f"**{cat}:** R$ {total:,.2f}")
     
     with col2:
         total_geral = sum(resultado.values())
-        st.metric("TOTAL DA CONTA (SOMA DAS GAVETAS)", f"R$ {total_geral:,.2f}")
-
-    st.divider()
-    st.success("Tudo pronto! Se o valor bater, você já pode confrontar com o RAH.")
-            
+        st.metric("TOTAL DA CONTA", f"R$ {total_geral:,.2f}")
+        
+    st.success("Busca de valores restaurada. Verifique se os R$ 75 mil apareceram.")
+    
