@@ -1,77 +1,69 @@
 import streamlit as st
 import pandas as pd
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
+# 1. Configuração que resolve o erro de upload e define o Layout
 st.set_page_config(page_title="AuditaFácil", layout="centered")
 
-# --- ESTILO CSS (Para manter o visual das fotos) ---
+# --- BANCO DE DADOS TESTE ---
+# CPF: 12345678901 | Senha: teste
+usuarios = {
+    "12345678901": {"senha": "teste", "perfil": "ADN"},
+}
+
+# --- CONTROLE DE SESSÃO ---
+if 'logado' not in st.session_state:
+    st.session_state.logado = False
+
+# --- ESTILO CSS (Fundo escuro e fontes) ---
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; }
-    h1 { color: white; font-family: 'sans-serif'; }
+    .stApp { background-color: #0e1117; }
+    label { color: white !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- BANCO DE DADOS TESTE (Simulado) ---
-# Aqui criamos o seu usuário ADN para testes
-usuarios_db = {
-    "12345678901": {"senha": "teste123", "perfil": "ADN"}, # CPF Teste
-    "00000000000": {"senha": "admin", "perfil": "Supervisor"}
-}
-
-# --- FUNÇÕES DE LOGIN ---
-if 'logado' not in st.session_state:
-    st.session_state.logado = False
-    st.session_state.perfil = None
-
-def autenticar(cpf, senha):
-    if cpf in usuarios_db and usuarios_db[cpf]["senha"] == senha:
-        st.session_state.logado = True
-        st.session_state.perfil = usuarios_db[cpf]["perfil"]
-        st.rerun()
-    else:
-        st.error("CPF ou Senha incorretos.")
-
-# --- TELA DE LOGIN (Igual à foto 1000648938) ---
+# --- TELA DE LOGIN (Baseada na foto 1000648938) ---
 if not st.session_state.logado:
     st.markdown("<h1 style='text-align: center;'>🌐 AuditaFácil</h1>", unsafe_allow_html=True)
     
     with st.container():
-        cpf_input = st.text_input("👤 CPF (apenas números)")
-        senha_input = st.text_input("🔑 Senha", type="password")
+        cpf = st.text_input("👤 CPF (apenas números)")
+        senha = st.text_input("🔑 Senha", type="password")
         
         if st.button("Acessar Sistema"):
-            autenticar(cpf_input, senha_input)
+            if cpf in usuarios and usuarios[cpf]["senha"] == senha:
+                st.session_state.logado = True
+                st.session_state.user = cpf
+                st.rerun()
+            else:
+                st.error("Usuário ou senha inválidos")
         
-        st.markdown("[Esqueceu a senha? Clique aqui para recuperar](#)")
+        st.markdown("<p style='text-align: center;'><a href='#'>Esqueceu a senha?</a></p>", unsafe_allow_html=True)
 
-# --- INTERFACE INTERNA (Igual à foto 1000648940) ---
+# --- TELA INTERNA (Baseada nas fotos 1000648940/941) ---
 else:
-    st.markdown("### 📑 Auditoria de Contas Hospitalares")
+    st.markdown("# 📑 Auditoria de Contas Hospitalares")
     
-    # Mensagem de instrução do sistema
+    # Box informativo azul
     st.info("Agora você pode selecionar vários arquivos (PDF ou Imagem) segurando a tecla Ctrl ou pressionando cada um no celular.")
 
-    # Upload de arquivos
-    arquivos = st.file_uploader("Selecione as fotos ou PDFs das contas", 
-                               accept_multiple_files=True, 
-                               type=['png', 'jpg', 'jpeg', 'pdf'])
-    
-    # Seção Administrativa (Visível apenas para ADN/Supervisor)
-    if st.session_state.perfil in ["ADN", "Supervisor"]:
-        with st.sidebar:
-            st.write(f"**Nível de Acesso:** {st.session_state.perfil}")
-            st.write("---")
-            if st.button("Painel de Gestão (ADN)"):
-                st.write("Aqui você poderá gerenciar códigos TUSS e usuários.")
-    
+    # Uploader corrigido (accept_multiple_files=True é o que permite várias fotos/folhas)
+    arquivos = st.file_uploader(
+        "Selecione as fotos ou PDFs das contas", 
+        type=["pdf", "jpg", "jpeg", "png"],
+        accept_multiple_files=True
+    )
+
+    if arquivos:
+        st.success(f"{len(arquivos)} arquivo(s) carregado(s). Iniciando leitura...")
+        # Aqui entra a lógica de somar a "conta suja" com a "conta limpa"
+        # que vamos construir assim que você validar este acesso.
+
     if st.button("Sair do Sistema"):
         st.session_state.logado = False
         st.rerun()
 
-    # --- ESPAÇO PARA O RESULTADO (Referência da foto 1000648794) ---
-    if arquivos:
-        st.success(f"{len(arquivos)} arquivo(s) carregado(s). Iniciando leitura...")
-        # A lógica de OCR e a tabela de resumo (Cobrado/Glosado/Liberado) 
-        # entrarão aqui após os cálculos baterem.
+    # Rodapé de Administrador
+    if usuarios[st.session_state.user]["perfil"] == "ADN":
+        st.sidebar.warning("Modo Administrador Ativo")
         
