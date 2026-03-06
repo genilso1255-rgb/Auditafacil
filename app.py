@@ -24,29 +24,28 @@ CATEGORIAS = [
     "Taxas"
 ]
 
-# Função para processar imagem e extrair texto
-def process_image(uploaded_file):
+# Função para abrir imagem e converter HEIC se necessário
+def open_image(uploaded_file):
     try:
-        image = Image.open(uploaded_file)
-
-        # Converter HEIC para RGB se necessário
-        if image.format == "HEIC":
-            image = pillow_heif.from_bytes(uploaded_file.read()).to_pil()
+        if uploaded_file.name.lower().endswith(".heic"):
+            heif_file = pillow_heif.from_bytes(uploaded_file.read())
+            image = heif_file.to_pil()
+        else:
+            image = Image.open(uploaded_file)
         if image.mode != "RGB":
             image = image.convert("RGB")
-        
-        # Converter para numpy array
-        img_np = np.array(image)
-        # Escala de cinza
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        # Threshold para melhorar OCR
-        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-        # OCR
-        text = pytesseract.image_to_string(thresh, lang='por')
-        return text
+        return image
     except Exception as e:
-        st.error(f"Erro ao processar a imagem: {e}")
-        return ""
+        st.error(f"Erro ao abrir a imagem {uploaded_file.name}: {e}")
+        return None
+
+# Função para processar OCR
+def ocr_image(image):
+    img_np = np.array(image)
+    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+    text = pytesseract.image_to_string(thresh, lang='por')
+    return text
 
 # Extrair valores monetários
 def extract_values(text):
@@ -56,10 +55,9 @@ def extract_values(text):
         linha = linha.strip()
         if not linha:
             continue
-        # Ignorar CPFs, CNPJs ou códigos
+        # Ignorar CPF, CNPJ ou códigos
         if re.search(r'\d{3}\.\d{3}\.\d{3}-\d{2}', linha) or re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', linha):
             continue
-        # Procurar valores monetários no formato brasileiro
         valores = re.findall(r'\d{1,3}(?:\.\d{3})*,\d{2}', linha)
         if valores:
             valor = valores[-1]
@@ -90,41 +88,59 @@ def categorize_line(linha):
         return "Exames"
     return None
 
-# Gerar DataFrame final
+# Gerar DataFrame por conta
 def generate_dataframe(dados):
-    df = pd.DataFrame(columns=["Categoria Final", "Subtotal Conta Suja (R$)"])
+    df = pd.DataFrame(columns=["Categoria Final", "Subtotal (R$)"])
     for cat in CATEGORIAS:
-        df = pd.concat([df, pd.DataFrame({"Categoria Final": [cat], "Subtotal Conta Suja (R$)": [0.0]})], ignore_index=True)
+        df = pd.concat([df, pd.DataFrame({"Categoria Final": [cat], "Subtotal (R$)": [0.0]})], ignore_index=True)
     for linha, valor in dados:
         categoria = categorize_line(linha)
         if categoria:
-            df.loc[df["Categoria Final"] == categoria, "Subtotal Conta Suja (R$)"] += valor
+            df.loc[df["Categoria Final"] == categoria, "Subtotal (R$)"] += valor
     df = df.sort_values("Categoria Final").reset_index(drop=True)
-    df["Subtotal Conta Limpa (R$)"] = 0.0
-    df["Glosa (R$)"] = 0.0
     return df
 
-# Streamlit interface
+# Interface Streamlit
 st.title("Auditoria de Contas Hospitalares")
 
-uploaded_file = st.file_uploader("Carregue a foto da conta (PNG, JPG, JPEG, HEIC):", type=None)
+uploaded_suja = st.file_uploader("Carregue a foto da conta SUJA (PNG, JPG, JPEG, HEIC):", type=None)
+uploaded_limpa = st.file_uploader("Carregue a foto da conta LIMPA (PNG, JPG, JPEG, HEIC):", type=None)
 
-if uploaded_file:
-    st.image(uploaded_file, caption="Conta carregada", use_column_width=True)
-    texto_extraido = process_image(uploaded_file)
-    dados_extraidos = extract_values(texto_extraido)
+if uploaded_suja and uploaded_limpa:
+    image_suja = open_image(uploaded_suja)
+    image_limpa = open_image(uploaded_limpa)
     
-    if not dados_extraidos:
-        st.warning("Nenhum valor monetário encontrado. Verifique a imagem ou o formato do arquivo.")
-    else:
-        df_final = generate_dataframe(dados_extraidos)
-        st.dataframe(df_final)
-        towrite = BytesIO()
-        df_final.to_excel(towrite, index=False, sheet_name="Auditoria")
-        towrite.seek(0)
-        st.download_button(
-            label="Baixar Planilha Excel",
-            data=towrite,
-            file_name="auditoria_conta.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    if image_suja and image_limpa:
+        st.image([image_suja, image_limpa], caption=["Conta Suja", "Conta Limpa"], use_column_width=True)
+        
+        # OCR
+        texto_suja = ocr_image(image_suja)
+        texto_limpa = ocr_image(image_limpa)
+        
+        dados_suja = extract_values(texto_suja)
+        dados_limpa = extract_values(texto_limpa)
+        
+        if not dados_suja or not dados_limpa:
+            st.warning("Nenhum valor monetário encontrado em uma ou ambas as contas.")
+        else:
+            df_suja = generate_dataframe(dados_suja)
+            df_limpa = generate_dataframe(dados_limpa)
+            
+            # Juntar as duas contas e calcular glosa
+            df_final = df_suja.copy()
+            df_final = df_final.rename(columns={"Subtotal (R$)": "Subtotal Conta Suja (R$)"})
+            df_final["Subtotal Conta Limpa (R$)"] = df_limpa["Subtotal (R$)"]
+            df_final["Glosa (R$)"] = df_final["Subtotal Conta Suja (R$)"] - df_final["Subtotal Conta Limpa (R$)"]
+            
+            st.dataframe(df_final)
+            
+            # Download Excel
+            towrite = BytesIO()
+            df_final.to_excel(towrite, index=False, sheet_name="Auditoria")
+            towrite.seek(0)
+            st.download_button(
+                label="Baixar Planilha Excel",
+                data=towrite,
+                file_name="auditoria_contas.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
