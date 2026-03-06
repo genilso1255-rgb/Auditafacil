@@ -3,15 +3,21 @@ import streamlit as st
 from PIL import Image
 import pytesseract
 from pillow_heif import register_heif_opener
+import io
 
+# Registrar HEIC para PIL
 register_heif_opener()
 
-# Função para garantir que a imagem seja compatível com pytesseract
-def abrir_imagem(file):
+# Função para abrir qualquer imagem e converter para PNG/RGB
+def abrir_imagem_convertida(file):
     img = Image.open(file)
     if img.mode != "RGB":
         img = img.convert("RGB")
-    return img
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    img_final = Image.open(buffer)
+    return img_final
 
 # Função para processar a conta e extrair valores por categoria
 def processar_conta(imagem):
@@ -55,8 +61,8 @@ foto_suja = st.file_uploader("Conta Suja", type=["png", "jpg", "jpeg", "heic"])
 foto_limpa = st.file_uploader("Conta Limpa", type=["png", "jpg", "jpeg", "heic"])
 
 if foto_suja and foto_limpa:
-    img_suja = abrir_imagem(foto_suja)
-    img_limpa = abrir_imagem(foto_limpa)
+    img_suja = abrir_imagem_convertida(foto_suja)
+    img_limpa = abrir_imagem_convertida(foto_limpa)
     
     st.image([img_suja, img_limpa], caption=["Conta Suja", "Conta Limpa"], width=300)
     
