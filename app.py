@@ -8,7 +8,7 @@ import pandas as pd
 from io import BytesIO
 import re
 
-# Configuração Tesseract
+# Configuração do Tesseract
 pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
 # Categorias finais
@@ -50,7 +50,7 @@ def ocr_image(image):
     text = pytesseract.image_to_string(thresh, lang='por')
     return text
 
-# Extrair valores monetários
+# Extrair valores monetários, ignorando CPF/CNPJ/códigos irrelevantes
 def extract_values(text):
     linhas = text.split("\n")
     dados = []
@@ -58,8 +58,13 @@ def extract_values(text):
         linha = linha.strip()
         if not linha:
             continue
-        # Ignorar CPF, CNPJ ou códigos
+        # Ignorar CPF, CNPJ ou números de material
         if re.search(r'\d{3}\.\d{3}\.\d{3}-\d{2}', linha) or re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', linha):
+            continue
+        if re.search(r'\b\d{5,}\b', linha):  # números longos de material/código
+            continue
+        # Ignorar linhas com apenas rabiscos ou marca-texto (geral heurística)
+        if re.match(r'^[^\w\d]+$', linha):
             continue
         valores = re.findall(r'\d{1,3}(?:\.\d{3})*,\d{2}', linha)
         if valores:
@@ -94,8 +99,8 @@ def generate_dataframe(dados):
     df = df.sort_values("Categoria Final").reset_index(drop=True)
     return df
 
-# Interface Streamlit
-st.title("Auditoria de Contas Hospitalares")
+# Streamlit interface
+st.title("Auditoria de Contas Hospitalares - Versão Profissional")
 
 uploaded_suja = st.file_uploader("Carregue a conta SUJA (PNG, JPG, JPEG, HEIC):", type=None)
 uploaded_limpa = st.file_uploader("Carregue a conta LIMPA (PNG, JPG, JPEG, HEIC):", type=None)
@@ -131,6 +136,6 @@ if uploaded_suja and uploaded_limpa:
             st.download_button(
                 label="Baixar Planilha Excel",
                 data=towrite,
-                file_name="auditoria_contas.xlsx",
+                file_name="auditoria_contas_profissional.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
