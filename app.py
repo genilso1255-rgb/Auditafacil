@@ -1,7 +1,4 @@
-# arquivo: auditoria_hospitalar.py
-# Streamlit App - Auditoria Hospitalar Automática
-# Bibliotecas: streamlit, pytesseract, OpenCV, PIL, pandas, numpy
-
+# app.py - Auditoria Hospitalar Atualizada
 import streamlit as st
 from PIL import Image
 import cv2
@@ -9,6 +6,10 @@ import numpy as np
 import pytesseract
 import pandas as pd
 import re
+from pillow_heif import register_heif_opener
+
+# Registrar HEIC
+register_heif_opener()
 
 # -----------------------------
 # Funções auxiliares
@@ -23,15 +24,10 @@ def limpar_imagem(img):
     - aplica threshold
     """
     img_cv = np.array(img)
-    # Converter para cinza
     gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
-    
-    # Threshold adaptativo para realçar o texto
     thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY, 11, 2)
-    # Remover ruído
     blur = cv2.medianBlur(thresh, 3)
-    
     return blur
 
 def extrair_valores_linha(linha):
@@ -39,18 +35,15 @@ def extrair_valores_linha(linha):
     Extrai valores em formato brasileiro (12.307,09) da linha
     Ignora CPF, CNPJ, códigos, datas
     """
-    # Regex para valores BR: ponto opcional de milhar + vírgula + dois centavos
     pattern = r'\d{1,3}(?:\.\d{3})*,\d{2}'
     valores = re.findall(pattern, linha)
     return valores
 
 def categorizar_linha(linha):
     """
-    Categoriza a linha com base nas regras que combinamos
+    Categoriza a linha com base nas regras combinadas
     """
     linha_lower = linha.lower()
-    
-    # Categorias
     if any(x in linha_lower for x in ['medicamento', 'dieta']):
         return 'MEDICAMENTOS'
     elif any(x in linha_lower for x in ['material hospitalar', 'fios cirúrgicos']):
@@ -74,21 +67,16 @@ def parse_ocr_text(text):
     """
     linhas = text.split('\n')
     dados = []
-    
     for linha in linhas:
         valores = extrair_valores_linha(linha)
         if valores:
             categoria = categorizar_linha(linha)
             for val in valores:
-                # Converter string BR para float
                 val_float = float(val.replace('.', '').replace(',', '.'))
                 dados.append({'Categoria': categoria, 'Valor (R$)': val_float})
-                
     df = pd.DataFrame(dados)
     if df.empty:
         return df
-    
-    # Somar valores por categoria
     df_sum = df.groupby('Categoria', as_index=False).sum()
     return df_sum
 
@@ -96,7 +84,6 @@ def calcular_glosa(df_suja, df_limpa):
     """
     Recebe dois dataframes (suja e limpa) e retorna glosa por categoria
     """
-    # Juntar categorias
     df_merge = pd.merge(df_suja, df_limpa, on='Categoria', how='outer', suffixes=('_Suja', '_Limpa'))
     df_merge.fillna(0, inplace=True)
     df_merge['Glosa (R$)'] = df_merge['Valor (R$)_Suja'] - df_merge['Valor (R$)_Limpa']
@@ -109,13 +96,13 @@ def calcular_glosa(df_suja, df_limpa):
 st.title("Sistema de Auditoria Hospitalar Automática")
 
 st.markdown("""
-Faça upload das contas (imagem ou PDF convertido para imagem):
+Faça upload das contas (imagem ou HEIC):  
 - Conta Suja (hospital)  
 - Conta Limpa (auditada)
 """)
 
-arquivo_suja = st.file_uploader("Upload Conta Suja", type=['png', 'jpg', 'jpeg'])
-arquivo_limpa = st.file_uploader("Upload Conta Limpa", type=['png', 'jpg', 'jpeg'])
+arquivo_suja = st.file_uploader("Upload Conta Suja", type=['png', 'jpg', 'jpeg', 'heic'])
+arquivo_limpa = st.file_uploader("Upload Conta Limpa", type=['png', 'jpg', 'jpeg', 'heic'])
 
 if arquivo_suja and arquivo_limpa:
     # Abrir imagens
@@ -155,7 +142,7 @@ if arquivo_suja and arquivo_limpa:
         st.write(f"Total Conta Limpa: R$ {total_limpa:,.2f}")
         st.write(f"Glosa Total: R$ {total_glosa:,.2f}")
         
-        # Mostrar categorias com glosa
+        # Categorias com glosa
         st.subheader("Categorias com Glosa")
         df_com_glosa = df_glosa[df_glosa['Glosa (R$)'] > 0]
         st.dataframe(df_com_glosa.style.format({"Glosa (R$)": "R$ {:,.2f}"}))
