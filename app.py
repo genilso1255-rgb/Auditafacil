@@ -24,7 +24,7 @@ CATEGORIAS = [
     "Taxas"
 ]
 
-# Função correta para abrir imagens HEIC ou normais
+# Função para abrir imagens HEIC ou normais
 def open_image(uploaded_file):
     try:
         name = uploaded_file.name.lower()
@@ -42,7 +42,7 @@ def open_image(uploaded_file):
         st.error(f"Erro ao abrir a imagem {uploaded_file.name}: {e}")
         return None
 
-# OCR
+# Função OCR
 def ocr_image(image):
     img_np = np.array(image)
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
@@ -58,6 +58,7 @@ def extract_values(text):
         linha = linha.strip()
         if not linha:
             continue
+        # Ignorar CPF, CNPJ ou códigos
         if re.search(r'\d{3}\.\d{3}\.\d{3}-\d{2}', linha) or re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', linha):
             continue
         valores = re.findall(r'\d{1,3}(?:\.\d{3})*,\d{2}', linha)
@@ -81,7 +82,7 @@ def categorize_line(linha):
     if any(x in l for x in ["teste diagnóstico","patologia","exame"]): return "Exames"
     return None
 
-# Gerar DataFrame
+# Gerar DataFrame por conta
 def generate_dataframe(dados):
     df = pd.DataFrame(columns=["Categoria Final","Subtotal (R$)"])
     for cat in CATEGORIAS:
@@ -93,7 +94,7 @@ def generate_dataframe(dados):
     df = df.sort_values("Categoria Final").reset_index(drop=True)
     return df
 
-# Streamlit interface
+# Interface Streamlit
 st.title("Auditoria de Contas Hospitalares")
 
 uploaded_suja = st.file_uploader("Carregue a conta SUJA (PNG, JPG, JPEG, HEIC):", type=None)
@@ -132,4 +133,4 @@ if uploaded_suja and uploaded_limpa:
                 data=towrite,
                 file_name="auditoria_contas.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+            )
